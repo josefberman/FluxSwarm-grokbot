@@ -1,8 +1,4 @@
 # Keep in sync with pyproject.toml (source of truth).
-# Core
-phiflow>=3.4.0
-h5py>=3.0.0
-
 # Machine Learning & RL
 torch>=2.0.0
 gymnasium>=0.28.0
