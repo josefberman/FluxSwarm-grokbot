@@ -1,8 +1,7 @@
 # Conda environment for FluxSwarm.
 # Runtime dependencies live in pyproject.toml (source of truth). This file
-# supplies Python and the conda-forge scientific stack, then installs the
-# project in editable mode so pip can satisfy remaining deps (torch, gymnasium)
-# from pyproject.toml.
+# lists the same set: conda-forge for the scientific stack, pip for torch
+# and the editable project (plus the [test] extra).
 name: fluxswarm
 channels:
   - conda-forge
@@ -17,6 +16,11 @@ dependencies:
   - tqdm>=4.65.0
   - tensorboard>=2.13.0
   - pyyaml>=6.0
+  - h5py>=3.0.0
+  - gymnasium>=0.28.0
+  - pytest
   - pip
   - pip:
-      - -e .
+      - phiflow>=3.4.0
+      - torch>=2.0.0
+      - -e ".[test]"
