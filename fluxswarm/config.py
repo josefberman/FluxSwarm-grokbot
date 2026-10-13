@@ -105,8 +105,12 @@ class TrainConfig:
     gae_lambda: float = 0.95
     vf_coef: float = 0.5
     lr: float = 1e-3
+    adam_eps: float = 1e-8
     total_timesteps_per_env: int = 25_000
     use_pcgrad: bool = True
+    pcgrad_protect_progress: bool = False
+    adv_norm: Literal["independent", "weighted", "off"] = "independent"
+    orthogonal_init: bool = False
     use_action_x_prior: bool = True
     action_x_prior_warmup_fraction: float = 0.2
     actor: Literal["mlp", "recurrent"] = "mlp"
@@ -211,7 +215,9 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "clip_coef": ("train", "clip_coef"),
         "gamma": ("train", "gamma"),
         "lr": ("train", "lr"),
+        "adam_eps": ("train", "adam_eps"),
         "total_timesteps_per_env": ("train", "total_timesteps_per_env"),
+        "adv_norm": ("train", "adv_norm"),
         "device_split": ("train", "device_split"),
         "seed": ("train", "seed"),
         "save_fields": ("train", "save_fields"),
@@ -237,6 +243,10 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
 
     if getattr(args, "no_pcgrad", False):
         cfg.train.use_pcgrad = False
+    if getattr(args, "pcgrad_protect_progress", False):
+        cfg.train.pcgrad_protect_progress = True
+    if getattr(args, "orthogonal_init", None) is not None:
+        cfg.train.orthogonal_init = bool(args.orthogonal_init)
     if getattr(args, "use_action_x_prior", None) is not None:
         cfg.train.use_action_x_prior = args.use_action_x_prior
     if getattr(args, "action_x_prior_warmup_fraction", None) is not None:
@@ -355,6 +365,16 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
     g.add_argument("--clip-coef", type=float, default=None, help=f"PPO clip coefficient ({d.train.clip_coef})")
     g.add_argument("--gamma", type=float, default=None, help=f"discount factor ({d.train.gamma})")
     g.add_argument("--lr", type=float, default=None, help=f"Adam learning rate ({d.train.lr})")
+    g.add_argument("--adam-eps", type=float, default=None, help=f"Adam epsilon ({d.train.adam_eps})")
+    g.add_argument(
+        "--adv-norm",
+        choices=["independent", "weighted", "off"],
+        default=None,
+        help=(
+            f"advantage normalization ({d.train.adv_norm}); "
+            f"'weighted' re-applies task weights after whitening so they are not cancelled"
+        ),
+    )
     g.add_argument(
         "--total-timesteps-per-env",
         type=int,
@@ -369,6 +389,26 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=f"disable PCGrad on actor gradients (default use_pcgrad={d.train.use_pcgrad})",
+    )
+    g.add_argument(
+        "--pcgrad-protect-progress",
+        action="store_true",
+        default=False,
+        help="never project the progress gradient away; only project energy/smooth off it",
+    )
+    g.add_argument(
+        "--orthogonal-init",
+        dest="orthogonal_init",
+        action="store_true",
+        default=None,
+        help=f"orthogonal actor/critic init (default={d.train.orthogonal_init})",
+    )
+    g.add_argument(
+        "--no-orthogonal-init",
+        dest="orthogonal_init",
+        action="store_false",
+        default=None,
+        help="disable orthogonal init",
     )
     g.add_argument(
         "--no-action-x-prior",
