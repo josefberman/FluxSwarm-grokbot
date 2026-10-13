@@ -245,8 +245,8 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
 
     if getattr(args, "no_pcgrad", False):
         cfg.train.use_pcgrad = False
-    if getattr(args, "pcgrad_protect_progress", False):
-        cfg.train.pcgrad_protect_progress = True
+    if getattr(args, "pcgrad_protect_progress", None) is not None:
+        cfg.train.pcgrad_protect_progress = bool(args.pcgrad_protect_progress)
     if getattr(args, "orthogonal_init", None) is not None:
         cfg.train.orthogonal_init = bool(args.orthogonal_init)
     if getattr(args, "use_action_x_prior", None) is not None:
@@ -400,9 +400,17 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
     )
     g.add_argument(
         "--pcgrad-protect-progress",
+        dest="pcgrad_protect_progress",
         action="store_true",
-        default=False,
+        default=None,
         help="never project the progress gradient away; only project energy/smooth off it",
+    )
+    g.add_argument(
+        "--no-pcgrad-protect-progress",
+        dest="pcgrad_protect_progress",
+        action="store_false",
+        default=None,
+        help="use symmetric PCGrad (legacy)",
     )
     g.add_argument(
         "--orthogonal-init",
