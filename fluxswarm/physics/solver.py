@@ -92,11 +92,14 @@ class BatchedFluidSolver:
     def step(self, actions: torch.Tensor) -> None:
         """One RL step: swarm forces then fluid substeps. actions: (B, N, 2)."""
         actions = project_actions_to_unit_disk(actions.to(self.device, dtype=torch.float64))
-        early = self.episode_time <= 0.005
-        if bool(torch.as_tensor(early).any()):
-            forced = actions.clone()
-            forced[early] = torch.tensor([-1.0, 0.0], device=self.device, dtype=torch.float64)
-            actions = forced
+        # Hidden −x override on the first RL step. Gated on the trainer flag so
+        # `--no-action-x-prior` is actually off-policy-free (log-probs match).
+        if self.cfg.train.use_action_x_prior:
+            early = self.episode_time <= 0.005
+            if bool(torch.as_tensor(early).any()):
+                forced = actions.clone()
+                forced[early] = torch.tensor([-1.0, 0.0], device=self.device, dtype=torch.float64)
+                actions = forced
 
         self.swarm.prev_action = self.swarm.action.clone()
         self.swarm.action = actions
