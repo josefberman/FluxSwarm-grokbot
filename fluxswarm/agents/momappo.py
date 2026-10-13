@@ -324,6 +324,7 @@ def train_momappo(
     success_min = max(1, success_window // 4)
 
     metrics_path = recorder.run_dir / "metrics.jsonl"
+    best_success = -1.0
     ep_reasons: deque[str] = deque(maxlen=256)
     ep_lens: deque[int] = deque(maxlen=256)
     ep_progress: deque[float] = deque(maxlen=256)
@@ -402,7 +403,7 @@ def train_momappo(
                     float(np.mean(success_outcomes[-success_window:])),
                     global_steps,
                 )
-            if B > 0:
+            if B > 0 and (global_steps % 10 == 0):
                 writer.add_scalar("objectives/progress", float(reward_matrix[0, :, 0].mean()), global_steps)
                 writer.add_scalar("objectives/energy", float(reward_matrix[0, :, 1].mean()), global_steps)
                 writer.add_scalar("objectives/smoothness", float(reward_matrix[0, :, 2].mean()), global_steps)
@@ -467,8 +468,12 @@ def train_momappo(
         last_entropy = torch.tensor(0.0, device=device)
         last_approx_kl = 0.0
         last_ev = explained_variance(buf.values, ret)
+        target_kl = float(cfg.train.target_kl or 0.0)
+        stop_ppo = False
 
         for _epoch in range(cfg.train.update_epochs):
+            if stop_ppo:
+                break
             np.random.shuffle(idxs)
             for start in range(0, n_samples, batch_size):
                 mb = idxs[start : start + batch_size]
@@ -528,6 +533,9 @@ def train_momappo(
                 optimizer.step()
                 last_entropy = entropy.detach()
                 last_approx_kl = float((b_old_logp - new_logp).mean().detach())
+                if target_kl > 0 and last_approx_kl > target_kl:
+                    stop_ppo = True
+                    break
 
         ckpt = pack_checkpoint(
             model,
@@ -572,6 +580,9 @@ def train_momappo(
         }
         with metrics_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
+        if success_rate >= best_success:
+            best_success = success_rate
+            torch.save(ckpt, models_dir / "model_best.pt")
         pbar.set_postfix(
             steps=global_steps,
             succ=f"{success_rate:.2f}",
@@ -583,7 +594,10 @@ def train_momappo(
     recorder.close()
     if cpu_pool is not None:
         cpu_pool.shutdown(wait=True)
-    if getattr(getattr(env, "solver", None), "torch_fluid", None) is not None:
+    if (
+        getattr(getattr(env, "solver", None), "torch_fluid", None) is not None
+        and int(cfg.train.live_swarm_tb_every) > 0
+    ):
         try:
             from fluxswarm.analysis.swarm_viz import animate_swarm_from_run
 

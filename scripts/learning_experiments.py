@@ -93,6 +93,16 @@ def _apply_variant(cfg: Config, variant: str) -> Config:
         cfg.train.orthogonal_init = True
         cfg.train.lr = 3e-4
         cfg.train.adam_eps = 1e-5
+    elif variant == "mb256_protect":
+        cfg.train.batch_size = 256
+        cfg.train.pcgrad_protect_progress = True
+        cfg.train.adv_norm = "weighted"
+    elif variant == "mb256_ortho":
+        cfg.train.batch_size = 256
+        cfg.train.orthogonal_init = True
+    elif variant == "mb256_lr3e4":
+        cfg.train.batch_size = 256
+        cfg.train.lr = 3e-4
     else:
         raise ValueError(variant)
     return cfg
