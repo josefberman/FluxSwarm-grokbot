@@ -243,6 +243,8 @@ def test_cli_learning_flags():
             "256",
             "--lr",
             "0.0003",
+            "--target-kl",
+            "0.02",
         ]
     )
     assert cfg.task.progress_reward == "legacy"
@@ -255,3 +257,4 @@ def test_cli_learning_flags():
     assert cfg.train.orthogonal_init is True
     assert cfg.train.batch_size == 256
     assert abs(cfg.train.lr - 3e-4) < 1e-12
+    assert abs(cfg.train.target_kl - 0.02) < 1e-12

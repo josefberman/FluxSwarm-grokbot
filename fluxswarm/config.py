@@ -97,7 +97,7 @@ class ObsConfig:
 class TrainConfig:
     batch_envs: int = 64
     n_steps: int = 200
-    batch_size: int = 4
+    batch_size: int = 256
     update_epochs: int = 4
     ent_coef: float = 0.01
     clip_coef: float = 0.2
@@ -108,9 +108,10 @@ class TrainConfig:
     adam_eps: float = 1e-8
     total_timesteps_per_env: int = 25_000
     use_pcgrad: bool = True
-    pcgrad_protect_progress: bool = False
-    adv_norm: Literal["independent", "weighted", "off"] = "independent"
+    pcgrad_protect_progress: bool = True
+    adv_norm: Literal["independent", "weighted", "off"] = "weighted"
     orthogonal_init: bool = False
+    target_kl: float = 0.02
     use_action_x_prior: bool = True
     action_x_prior_warmup_fraction: float = 0.2
     actor: Literal["mlp", "recurrent"] = "mlp"
@@ -218,6 +219,7 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "adam_eps": ("train", "adam_eps"),
         "total_timesteps_per_env": ("train", "total_timesteps_per_env"),
         "adv_norm": ("train", "adv_norm"),
+        "target_kl": ("train", "target_kl"),
         "device_split": ("train", "device_split"),
         "seed": ("train", "seed"),
         "save_fields": ("train", "save_fields"),
@@ -366,6 +368,12 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
     g.add_argument("--gamma", type=float, default=None, help=f"discount factor ({d.train.gamma})")
     g.add_argument("--lr", type=float, default=None, help=f"Adam learning rate ({d.train.lr})")
     g.add_argument("--adam-eps", type=float, default=None, help=f"Adam epsilon ({d.train.adam_eps})")
+    g.add_argument(
+        "--target-kl",
+        type=float,
+        default=None,
+        help=f"stop PPO epochs early when approx KL exceeds this ({d.train.target_kl}); 0 disables",
+    )
     g.add_argument(
         "--adv-norm",
         choices=["independent", "weighted", "off"],

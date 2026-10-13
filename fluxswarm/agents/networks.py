@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-LOG_STD_MIN = -5.0
+LOG_STD_MIN = -2.0
 LOG_STD_MAX = 2.0
 
 

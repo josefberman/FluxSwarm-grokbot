@@ -1,0 +1,48 @@
+{
+  "brute": {
+    "policy": "brute_upstream",
+    "steps": 120,
+    "seconds": 0.6595230102539062,
+    "sec_per_step": 0.005496025085449219,
+    "start_mean_x": 50.0,
+    "end_mean_x": 30.887163367278436,
+    "delta_x": -19.112836632721564,
+    "n_episodes": 0,
+    "successes": 0,
+    "failures": 0,
+    "resolution": [
+      200,
+      4
+    ],
+    "dt_substeps": 4,
+    "batch": 2
+  },
+  "trains": [
+    {
+      "winner": false,
+      "seed": 0,
+      "run": "2026-10-13_16-21-20_phys_base_s0",
+      "seconds": 8.073429346084595,
+      "steps_per_env": 512,
+      "batch": 4,
+      "final_success_rate": 0.0,
+      "tail_success_rate": 0.0,
+      "final_mean_x": 36.801065016568536,
+      "final_mean_act_x": -0.19732456968631595,
+      "final_cum_progress": 20.309298897021648
+    },
+    {
+      "winner": true,
+      "seed": 0,
+      "run": "2026-10-13_16-21-28_phys_win_s0",
+      "seconds": 8.03987979888916,
+      "steps_per_env": 512,
+      "batch": 4,
+      "final_success_rate": 0.0,
+      "tail_success_rate": 0.0,
+      "final_mean_x": 41.443592939416234,
+      "final_mean_act_x": -0.11001102771842852,
+      "final_cum_progress": 0.0
+    }
+  ]
+}
