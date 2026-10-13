@@ -70,7 +70,13 @@ Brute-upstream, 120 steps, 200×4 grid: mean x **50 → 30.9** (`physics_brute.j
 
 Plot: `physics_16env_4000_compare.png`.
 
-A 16 env × 100k cheap-physics winner run is in `runs_new/_research/` (CPU ~0.018 s/env-step plus PPO). Full-resolution fluid at this budget is not CPU-feasible (~0.05 s/step already on a 400×8 × 8-substep grid).
+**16 envs × 100k steps/env** cheap physics, winner hparams, ~35 min CPU (`physics_16env_100k_winner.png`):
+
+| | peak success | final success | tail success | final mean x | min mean x | final act_x |
+|--|-------------:|--------------:|-------------:|-------------:|-----------:|------------:|
+| winner | **1.00** | **0.75** | 0.54 | 36.5 | 25.9 | −0.18 |
+
+Success_rate is clearly above the old-hparams 4k baseline (0.34) and stays high after entropy floors. Full-resolution fluid (1000×20 × 40 substeps) is not CPU-feasible.
 
 ## Defaults after ablations
 
