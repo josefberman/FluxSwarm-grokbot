@@ -24,6 +24,9 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [project.scripts]
 fluxswarm = "fluxswarm.cli.__main__:main"
 

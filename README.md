@@ -13,9 +13,11 @@ Physics-informed multi-objective multi-agent RL for controlling a microrobot swa
 ## Install
 
 ```bash
+conda env create -f environment.yml
 conda activate fluxswarm
-pip install -e .
 ```
+
+`environment.yml` installs the project in editable mode (`pip install -e .`). Recreate or update with `conda env update -f environment.yml --prune`.
 
 ## Train
 
