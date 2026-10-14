@@ -1,6 +1,8 @@
 """Multi-objective multi-agent PPO (CTDE) with corrected log-probs and PCGrad."""
 from __future__ import annotations
 
+import json
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -167,6 +169,41 @@ def compute_gae(
     return adv, returns
 
 
+def normalize_objective_advantages(
+    adv: torch.Tensor,
+    *,
+    mode: str = "independent",
+    weight: float = 1.0,
+    min_std: float = 1e-3,
+) -> torch.Tensor:
+    """Whiten advantages; optionally re-apply the task weight.
+
+    Independent per-objective unit-variance scaling cancels ``w_progress`` etc.
+    and amplifies noise when an objective is nearly constant (e.g. all-zero
+    energy rewards). Degenerate batches are zeroed instead of divided by 1e-8.
+    """
+    adv = torch.nan_to_num(adv, nan=0.0, posinf=0.0, neginf=0.0)
+    if mode == "off":
+        return adv
+    std = adv.std()
+    if not torch.isfinite(std) or float(std) < min_std:
+        return torch.zeros_like(adv)
+    z = (adv - adv.mean()) / (std + 1e-8)
+    z = torch.nan_to_num(z, nan=0.0, posinf=0.0, neginf=0.0)
+    if mode == "weighted":
+        z = z * float(weight)
+    return z
+
+
+def explained_variance(y_pred: torch.Tensor, y: torch.Tensor) -> float:
+    y = y.detach().flatten()
+    y_pred = y_pred.detach().flatten()
+    var_y = y.var()
+    if float(var_y) < 1e-8:
+        return 0.0
+    return float(1.0 - (y - y_pred).var() / (var_y + 1e-8))
+
+
 class RolloutBuffer:
     def __init__(self, T: int, B: int, N: int, obs_dim: int, device: torch.device):
         self.T, self.B, self.N, self.obs_dim = T, B, N, obs_dim
@@ -235,7 +272,9 @@ def train_momappo(
         log_std_init=cfg.train.log_std_init,
         recurrent=(cfg.train.actor == "recurrent"),
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr)
+    if cfg.train.orthogonal_init:
+        model.apply_orthogonal_init()
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, eps=cfg.train.adam_eps)
     obs_norm = RunningNorm(obs_dim, device)
 
     models_dir = recorder.run_dir / "models"
@@ -284,6 +323,17 @@ def train_momappo(
     success_outcomes: list[float] = []
     success_min = max(1, success_window // 4)
 
+    metrics_path = recorder.run_dir / "metrics.jsonl"
+    best_success = -1.0
+    ep_reasons: deque[str] = deque(maxlen=256)
+    ep_lens: deque[int] = deque(maxlen=256)
+    ep_progress: deque[float] = deque(maxlen=256)
+    task_weights = (
+        cfg.task.w_progress,
+        cfg.task.w_energy,
+        cfg.task.w_smooth,
+    )
+
     pbar = trange(num_updates, desc="MOMAPPO")
     for update in pbar:
         buf = RolloutBuffer(n_steps, B, N, obs_dim, device)
@@ -323,6 +373,12 @@ def train_momappo(
             dones = torch.tensor(terms | truncs, device=device)
 
             buf.add(obs, action.detach(), logp.detach(), reward_matrix, values, dones)
+            for inf in info["infos"]:
+                ep = inf.get("episode")
+                if ep is not None:
+                    ep_reasons.append(str(ep.get("reason", "")))
+                    ep_lens.append(int(ep.get("steps", 0)))
+                    ep_progress.append(float(ep.get("cum_progress", 0.0)))
 
             recorder.log_step(
                 global_steps,
@@ -347,7 +403,7 @@ def train_momappo(
                     float(np.mean(success_outcomes[-success_window:])),
                     global_steps,
                 )
-            if B > 0:
+            if B > 0 and (global_steps % 10 == 0):
                 writer.add_scalar("objectives/progress", float(reward_matrix[0, :, 0].mean()), global_steps)
                 writer.add_scalar("objectives/energy", float(reward_matrix[0, :, 1].mean()), global_steps)
                 writer.add_scalar("objectives/smoothness", float(reward_matrix[0, :, 2].mean()), global_steps)
@@ -356,8 +412,10 @@ def train_momappo(
                 writer.add_scalar("agent0/pos_y", float(a0.pos[0, 0, 1]), global_steps)
                 writer.add_scalar("agent0/act_x", float(a0.action[0, 0, 0]), global_steps)
                 writer.add_scalar("agent0/act_y", float(a0.action[0, 0, 1]), global_steps)
+                writer.add_scalar("swarm/mean_x", float(a0.pos[..., 0].mean()), global_steps)
+                writer.add_scalar("swarm/mean_act_x", float(a0.action[..., 0].mean()), global_steps)
                 sol = env.solver
-                if sol.last_drag is not None:
+                if sol.last_drag is not None and sol.last_pressure_force is not None:
                     writer.add_scalar(
                         "agent0/force_drag_mag",
                         float(torch.linalg.norm(sol.last_drag[0, 0])),
@@ -392,8 +450,11 @@ def train_momappo(
                 cfg.train.gamma,
                 cfg.train.gae_lambda,
             )
-            adv_k = (adv_k - adv_k.mean()) / (adv_k.std() + 1e-8)
-            adv_k = torch.nan_to_num(adv_k, nan=0.0, posinf=0.0, neginf=0.0)
+            adv_k = normalize_objective_advantages(
+                adv_k,
+                mode=cfg.train.adv_norm,
+                weight=task_weights[k],
+            )
             ret_k = torch.nan_to_num(ret_k, nan=0.0, posinf=0.0, neginf=0.0)
             advs.append(adv_k)
             rets.append(ret_k)
@@ -402,10 +463,17 @@ def train_momappo(
 
         data = buf.get(adv, ret)
         n_samples = data["obs"].shape[0]
-        batch_size = min(cfg.train.batch_size, n_samples)
+        batch_size = min(max(int(cfg.train.batch_size), 1), n_samples)
         idxs = np.arange(n_samples)
+        last_entropy = torch.tensor(0.0, device=device)
+        last_approx_kl = 0.0
+        last_ev = explained_variance(buf.values, ret)
+        target_kl = float(cfg.train.target_kl or 0.0)
+        stop_ppo = False
 
         for _epoch in range(cfg.train.update_epochs):
+            if stop_ppo:
+                break
             np.random.shuffle(idxs)
             for start in range(0, n_samples, batch_size):
                 mb = idxs[start : start + batch_size]
@@ -445,7 +513,11 @@ def train_momappo(
 
                 optimizer.zero_grad(set_to_none=True)
                 if cfg.train.use_pcgrad:
-                    pcgrad_merge_actor(model.actor, loss_pis)
+                    pcgrad_merge_actor(
+                        model.actor,
+                        loss_pis,
+                        protect_primary=cfg.train.pcgrad_protect_progress,
+                    )
                 else:
                     sum(loss_pis).backward(retain_graph=True)
 
@@ -459,6 +531,11 @@ def train_momappo(
                     continue
                 nn.utils.clip_grad_norm_(model.parameters(), cfg.train.max_grad_norm)
                 optimizer.step()
+                last_entropy = entropy.detach()
+                last_approx_kl = float((b_old_logp - new_logp).mean().detach())
+                if target_kl > 0 and last_approx_kl > target_kl:
+                    stop_ppo = True
+                    break
 
         ckpt = pack_checkpoint(
             model,
@@ -470,19 +547,63 @@ def train_momappo(
             use_pcgrad=cfg.train.use_pcgrad,
         )
         torch.save(ckpt, latest)
-        torch.save(ckpt, models_dir / f"model_{update:05d}.pt")
-        pbar.set_postfix(steps=global_steps, ent=float(entropy.detach()))
+        if update % 10 == 0 or update == num_updates - 1:
+            torch.save(ckpt, models_dir / f"model_{update:05d}.pt")
+
+        n_ep = max(len(ep_reasons), 1)
+        success_rate = sum(r == "success" for r in ep_reasons) / n_ep if ep_reasons else 0.0
+        fail_rate = sum(r == "failure" for r in ep_reasons) / n_ep if ep_reasons else 0.0
+        mean_x = float(env.solver.swarm.pos[..., 0].mean().detach())
+        mean_act_x = float(env.solver.swarm.action[..., 0].mean().detach())
+        mean_prog = float(np.mean(list(ep_progress)[-64:])) if ep_progress else 0.0
+        mean_len = float(np.mean(list(ep_lens)[-64:])) if ep_lens else 0.0
+        writer.add_scalar("episode/success_rate", success_rate, global_steps)
+        writer.add_scalar("episode/failure_rate", fail_rate, global_steps)
+        writer.add_scalar("episode/mean_length", mean_len, global_steps)
+        writer.add_scalar("episode/cum_progress", mean_prog, global_steps)
+        writer.add_scalar("training/entropy", float(last_entropy), global_steps)
+        writer.add_scalar("training/approx_kl", last_approx_kl, global_steps)
+        writer.add_scalar("training/explained_variance", last_ev, global_steps)
+        writer.add_scalar("swarm/mean_x", mean_x, global_steps)
+        row = {
+            "update": int(update),
+            "global_steps": int(global_steps),
+            "success_rate": success_rate,
+            "failure_rate": fail_rate,
+            "mean_ep_len": mean_len,
+            "mean_cum_progress": mean_prog,
+            "mean_x": mean_x,
+            "mean_act_x": mean_act_x,
+            "entropy": float(last_entropy),
+            "approx_kl": last_approx_kl,
+            "explained_variance": last_ev,
+        }
+        with metrics_path.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+        if success_rate >= best_success:
+            best_success = success_rate
+            torch.save(ckpt, models_dir / "model_best.pt")
+        pbar.set_postfix(
+            steps=global_steps,
+            succ=f"{success_rate:.2f}",
+            mx=f"{mean_x:.1f}",
+            ent=float(last_entropy),
+        )
 
     writer.close()
     recorder.close()
     if cpu_pool is not None:
         cpu_pool.shutdown(wait=True)
-    try:
-        from fluxswarm.analysis.swarm_viz import animate_swarm_from_run
+    if (
+        getattr(getattr(env, "solver", None), "torch_fluid", None) is not None
+        and int(cfg.train.live_swarm_tb_every) > 0
+    ):
+        try:
+            from fluxswarm.analysis.swarm_viz import animate_swarm_from_run
 
-        anim = animate_swarm_from_run(recorder.run_dir)
-        if anim is not None:
-            print(f"Wrote swarm animation {anim}")
-    except Exception as exc:
-        print(f"Swarm animation skipped: {exc}")
+            anim = animate_swarm_from_run(recorder.run_dir)
+            if anim is not None:
+                print(f"Wrote swarm animation {anim}")
+        except Exception as exc:
+            print(f"Swarm animation skipped: {exc}")
     return recorder.run_dir

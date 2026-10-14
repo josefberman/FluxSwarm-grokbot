@@ -151,3 +151,110 @@ def test_domain_clamp():
     assert hit.any()
     assert float(clamped[0, 0, 0]) >= 0.25
     assert float(clamped[0, 1, 1]) <= 2.0 - 0.25
+
+
+def test_advantage_whitening_cancels_weights():
+    from fluxswarm.agents.momappo import normalize_objective_advantages
+
+    torch.manual_seed(0)
+    base = torch.randn(20, 4, 3)
+    a9 = normalize_objective_advantages(base * 9.0, mode="independent", weight=9.0)
+    a1 = normalize_objective_advantages(base * 1.0, mode="independent", weight=1.0)
+    assert torch.allclose(a9, a1, atol=1e-5)
+
+    z9 = normalize_objective_advantages(base * 9.0, mode="weighted", weight=9.0)
+    z1 = normalize_objective_advantages(base * 1.0, mode="weighted", weight=1.0)
+    assert float(z9.abs().mean()) > 5.0 * float(z1.abs().mean())
+
+
+def test_advantage_degenerate_std_is_zero():
+    from fluxswarm.agents.momappo import normalize_objective_advantages
+
+    const = torch.full((8, 2, 3), -0.1)
+    out = normalize_objective_advantages(const, mode="independent", weight=1.0)
+    assert torch.equal(out, torch.zeros_like(out))
+
+
+def test_gae_masks_done():
+    from fluxswarm.agents.momappo import compute_gae
+
+    T, B, N = 3, 1, 1
+    rewards = torch.tensor([[[1.0]], [[1.0]], [[1.0]]])
+    values = torch.zeros(T, B, N)
+    dones = torch.tensor([[0.0], [1.0], [0.0]])
+    last_v = torch.tensor([[100.0]])
+    last_done = torch.zeros(B)
+    adv, ret = compute_gae(rewards, values, dones, last_v, last_done, gamma=0.99, lam=1.0)
+    # t=1 is done: no bootstrap, return == reward
+    assert abs(float(ret[1, 0, 0]) - 1.0) < 1e-5
+    # t=2 is a new episode; last_v bootstraps
+    assert float(ret[2, 0, 0]) > 50.0
+
+
+def test_dummy_autoreset_returns_start_obs():
+    from fluxswarm.config import Config
+    from fluxswarm.envs.dummy import DummyUpstreamEnv
+
+    cfg = Config()
+    env = DummyUpstreamEnv(cfg, batch=2, n_agents=3, max_steps=2, drift=5.0, speed=0.0)
+    obs, _ = env.reset(seed=0)
+    start_x = float(obs[0, 0, 0])
+    actions = np.zeros((2, 3, 2))
+    saw_reset = False
+    for _ in range(5):
+        next_obs, _, terms, truncs, info = env.step(actions)
+        if bool(terms[0] or truncs[0]):
+            assert abs(float(next_obs[0, 0, 0]) - start_x) < 1e-4
+            saw_reset = True
+    assert saw_reset
+
+
+def test_obs_history_reset_envs():
+    cfg = Config().obs
+    cfg.preset = "rich"
+    cfg.history = 3
+    cfg.localization = "none"
+    builder = ObservationBuilder(cfg, num_members=2, batch=2, device=torch.device("cpu"))
+    frame = torch.ones(2, 2, builder.frame_dim)
+    builder._history.append(frame.clone())
+    builder._history.append(frame.clone())
+    builder.reset_envs(torch.tensor([1]))
+    assert float(builder._history[0][0].sum()) != 0
+    assert float(builder._history[0][1].sum()) == 0
+
+
+def test_cli_learning_flags():
+    cfg = parse_config(
+        [
+            "--progress-reward",
+            "legacy",
+            "--obs-localization",
+            "full",
+            "--no-action-x-prior",
+            "--batch-envs",
+            "16",
+            "--total-timesteps-per-env",
+            "100000",
+            "--adv-norm",
+            "weighted",
+            "--pcgrad-protect-progress",
+            "--orthogonal-init",
+            "--batch-size",
+            "256",
+            "--lr",
+            "0.0003",
+            "--target-kl",
+            "0.02",
+        ]
+    )
+    assert cfg.task.progress_reward == "legacy"
+    assert cfg.obs.localization == "full"
+    assert cfg.train.use_action_x_prior is False
+    assert cfg.train.batch_envs == 16
+    assert cfg.train.total_timesteps_per_env == 100000
+    assert cfg.train.adv_norm == "weighted"
+    assert cfg.train.pcgrad_protect_progress is True
+    assert cfg.train.orthogonal_init is True
+    assert cfg.train.batch_size == 256
+    assert abs(cfg.train.lr - 3e-4) < 1e-12
+    assert abs(cfg.train.target_kl - 0.02) < 1e-12

@@ -1,0 +1,13 @@
+{
+  "run": "2026-10-13_16-22-33_phys16_base_4000_s0",
+  "updates": 20,
+  "global_steps": 64000,
+  "final_success_rate": 0.3411214953271028,
+  "peak_success_rate": 0.504,
+  "tail_success_rate": 0.3795750917738226,
+  "final_mean_x": 52.00974222094614,
+  "min_mean_x": 29.821705898397507,
+  "final_mean_act_x": 0.017540570228334218,
+  "final_cum_progress": 55.55262559595253,
+  "final_entropy": -0.38079237937927246
+}
