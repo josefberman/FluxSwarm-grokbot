@@ -266,21 +266,6 @@ def train_momappo(
         print(f"Resumed from {resume_ckpt_path} at global_steps={global_steps}")
 
     writer = SummaryWriter(log_dir=str(recorder.run_dir / "tb"))
-    swarm_tb_every = int(cfg.train.live_swarm_tb_every)
-    swarm_renderer = None
-    if swarm_tb_every > 0:
-        from fluxswarm.analysis.swarm_viz import SwarmTrailRenderer
-
-        swarm_renderer = SwarmTrailRenderer(
-            length_x=cfg.sim.length_x,
-            length_y=cfg.sim.length_y,
-            success_x=cfg.task.success_x,
-            failure_x=cfg.task.failure_x,
-            radius=cfg.swarm.member_radius,
-            dpi=cfg.train.live_swarm_tb_dpi,
-            fig_scale=cfg.train.live_swarm_tb_scale,
-            display_wh_ratio=cfg.train.live_swarm_tb_aspect,
-        )
     obs_np, _ = env.reset(seed=cfg.train.seed)
     cpu_obs_np = None
     if cpu_env is not None:
@@ -295,7 +280,9 @@ def train_momappo(
     total = cfg.train.total_timesteps_per_env * envs_per_step
     num_updates = max(1, total // (n_steps * envs_per_step))
     prior_warmup_rows = max(1, int(num_updates * n_steps * cfg.train.action_x_prior_warmup_fraction))
-    last_swarm_tb_bucket = -1
+    success_window = max(32, 8 * envs_per_step)
+    success_outcomes: list[float] = []
+    success_min = max(1, success_window // 4)
 
     pbar = trange(num_updates, desc="MOMAPPO")
     for update in pbar:
@@ -327,6 +314,7 @@ def train_momappo(
                 cpu_fut = cpu_pool.submit(cpu_env.step, c_act)
             next_obs_np, scalar_r, terms, truncs, info = env.step(action_np)
             pbar.set_postfix(rollout=f"{t + 1}/{n_steps}", steps=global_steps + B, refresh=True)
+            c_info = None
             if cpu_fut is not None:
                 cpu_obs_np, c_scalar, _, _, c_info = cpu_fut.result()
                 recorder.log_step(global_steps + B, cpu_env, c_scalar, c_info)
@@ -343,34 +331,29 @@ def train_momappo(
                 info,
                 save_fields=cfg.train.save_fields and (global_steps % 50 == 0),
             )
+            for inf in info["infos"]:
+                ep = inf.get("episode")
+                if ep is not None:
+                    success_outcomes.append(1.0 if ep.get("reason") == "success" else 0.0)
+            if c_info is not None:
+                for inf in c_info["infos"]:
+                    ep = inf.get("episode")
+                    if ep is not None:
+                        success_outcomes.append(1.0 if ep.get("reason") == "success" else 0.0)
+            n_done = len(success_outcomes)
+            if n_done >= success_min:
+                writer.add_scalar(
+                    "objectives/success_rate",
+                    float(np.mean(success_outcomes[-success_window:])),
+                    global_steps,
+                )
             if B > 0:
                 writer.add_scalar("objectives/progress", float(reward_matrix[0, :, 0].mean()), global_steps)
                 writer.add_scalar("objectives/energy", float(reward_matrix[0, :, 1].mean()), global_steps)
                 writer.add_scalar("objectives/smoothness", float(reward_matrix[0, :, 2].mean()), global_steps)
-                ep0 = info["infos"][0].get("episode")
-                if ep0 is not None:
-                    cum_p, cum_e, cum_s = (
-                        ep0["cum_progress"],
-                        ep0["cum_energy_efficiency"],
-                        ep0["cum_smoothness"],
-                    )
-                    n_steps_ep = max(int(ep0["steps"]), 1)
-                else:
-                    cum0 = env.cum_objectives[0]
-                    cum_p, cum_e, cum_s = float(cum0[0]), float(cum0[1]), float(cum0[2])
-                    n_steps_ep = max(int(env.episode_steps[0].item()), 1)
-                writer.add_scalar("objectives/cum_progress", cum_p, global_steps)
-                writer.add_scalar("objectives/cum_energy", cum_e, global_steps)
-                writer.add_scalar("objectives/cum_smoothness", cum_s, global_steps)
-                writer.add_scalar("objectives/mean_progress", cum_p / n_steps_ep, global_steps)
-                writer.add_scalar("objectives/mean_energy", cum_e / n_steps_ep, global_steps)
-                writer.add_scalar("objectives/mean_smoothness", cum_s / n_steps_ep, global_steps)
-                writer.add_scalar("training/action_x_prior_relax", relax, global_steps)
                 a0 = env.solver.swarm
                 writer.add_scalar("agent0/pos_x", float(a0.pos[0, 0, 0]), global_steps)
                 writer.add_scalar("agent0/pos_y", float(a0.pos[0, 0, 1]), global_steps)
-                writer.add_scalar("agent0/vel_x", float(a0.vel[0, 0, 0]), global_steps)
-                writer.add_scalar("agent0/vel_y", float(a0.vel[0, 0, 1]), global_steps)
                 writer.add_scalar("agent0/act_x", float(a0.action[0, 0, 0]), global_steps)
                 writer.add_scalar("agent0/act_y", float(a0.action[0, 0, 1]), global_steps)
                 sol = env.solver
@@ -381,31 +364,10 @@ def train_momappo(
                         global_steps,
                     )
                     writer.add_scalar(
-                        "agent0/force_pressure_mag",
-                        float(torch.linalg.norm(sol.last_pressure_force[0, 0])),
-                        global_steps,
-                    )
-                    writer.add_scalar(
                         "agent0/force_thrust_mag",
                         float(torch.linalg.norm(sol.last_thrust[0, 0])),
                         global_steps,
                     )
-                tf = sol.torch_fluid
-                writer.add_scalar("fluid/max_u", tf.max_speed(0), global_steps)
-                writer.add_scalar("fluid/max_p", tf.max_pressure(0), global_steps)
-                writer.add_scalar("fluid/chi_wall", tf.chi_wall(0), global_steps)
-                if swarm_renderer is not None and swarm_tb_every > 0:
-                    bucket = global_steps // swarm_tb_every
-                    if bucket != last_swarm_tb_bucket:
-                        last_swarm_tb_bucket = bucket
-                        if info["infos"][0].get("episode") is not None:
-                            swarm_renderer.reset_trail()
-                        pos0 = a0.pos[0].detach().cpu().numpy()
-                        img = swarm_renderer.render(
-                            pos0,
-                            title=f"step {global_steps}  t={float(env.solver.episode_time[0]):.2f}s",
-                        )
-                        writer.add_image("swarm/positions", img, global_steps)
 
             next_obs = torch.tensor(next_obs_np, device=device)
             next_obs = torch.nan_to_num(next_obs, nan=0.0, posinf=0.0, neginf=0.0)

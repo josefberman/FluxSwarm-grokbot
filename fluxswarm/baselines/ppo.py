@@ -18,7 +18,7 @@ from fluxswarm.runs.recorder import RunRecorder
 
 
 class ActorCriticPPO(nn.Module):
-    def __init__(self, num_members, obs_dim, hidden_sizes=(256, 256), log_std_init=-1.0):
+    def __init__(self, num_members, obs_dim, hidden_sizes=(256, 128), log_std_init=-1.0):
         super().__init__()
         self.actor = Actor(obs_dim, 2, hidden_sizes, log_std_init)
         self.critic = SingleCritic(num_members * obs_dim, num_members, hidden_sizes)

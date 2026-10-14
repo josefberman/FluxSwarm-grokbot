@@ -266,6 +266,10 @@ def animate_swarm_from_run(
         steps = pd.read_parquet(steps_path)
     if steps is None or len(steps) == 0:
         return None
+    if "env" in steps.columns:
+        steps = steps.loc[steps["env"] == 0].sort_values("global_step" if "global_step" in steps.columns else steps.columns[0])
+        if len(steps) == 0:
+            return None
     xs = sorted(c for c in steps.columns if c.startswith("location_") and c.endswith("_x"))
     ys = sorted(c for c in steps.columns if c.startswith("location_") and c.endswith("_y"))
     if not xs or len(xs) != len(ys):

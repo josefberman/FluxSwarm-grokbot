@@ -70,9 +70,9 @@ class RunRecorder:
         pos = env.get_positions()
         vel = env.get_velocities()
         act = env.get_actions()
-        for b in range(min(B, 1)):
+        for b in range(B):
             row: dict[str, Any] = {
-                "global_step": global_step + b,
+                "global_step": global_step,
                 "env": b,
                 "episode": int(env.episode_id[b]),
                 "episode_time": float(env.solver.episode_time[b]),
@@ -100,6 +100,7 @@ class RunRecorder:
                 )
 
         if save_fields:
+            # Fluid snapshots stay env-0 only; step/episode rows log every env.
             snap = env.solver.export_fields(0)
             path = self.run_dir / "fields" / f"step_{global_step:06d}.npz"
             np.savez_compressed(

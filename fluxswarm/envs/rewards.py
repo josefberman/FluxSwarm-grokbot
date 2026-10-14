@@ -45,8 +45,7 @@ def _progress(solver: BatchedFluidSolver, task: TaskConfig, prev_pos: torch.Tens
     if mode == "potential":
         dx = prev_pos[..., 0] - pos[..., 0]  # positive when moving upstream
         prog = 100.0 * dx / L
-        # Clamp between -1 and 1
-        prog = torch.clamp(prog, -1.0, 1.0)
+        # No clamping
         # Terminal bonuses applied by env on done; keep step shaping clean
         return prog
 
@@ -55,7 +54,7 @@ def _progress(solver: BatchedFluidSolver, task: TaskConfig, prev_pos: torch.Tens
         if fu is None:
             fu = torch.zeros(pos.shape[0], pos.shape[1], device=pos.device, dtype=pos.dtype)
         v_ref = max(abs(solver.cfg.sim.inflow_velocity), 1e-6)
-        return torch.clamp((fu - solver.swarm.vel[..., 0]) / v_ref, -1.0, 1.0)
+        return (fu - solver.swarm.vel[..., 0]) / v_ref  # No clamping
 
     # legacy
     prog = torch.zeros(pos.shape[0], pos.shape[1], device=pos.device, dtype=pos.dtype)
@@ -68,17 +67,15 @@ def _progress(solver: BatchedFluidSolver, task: TaskConfig, prev_pos: torch.Tens
     x_prev = prev_pos[..., 0]
     moving_left = x_t < x_prev
     delta = (x_prev - x_t) / L
-    tanh_term = torch.tanh(3.0 * delta) / math.tanh(3.0) * 100.0 - 0.1
-    # tanh_term = torch.tanh(3.0 * delta) / math.tanh(3.0) * 10.0 - 0.01
-    # linear_term = delta * 100.0 - 0.1
-    linear_term = 0.0 - 0.1 # no progress penalty
+    # tanh_term = torch.tanh(3.0 * delta) / math.tanh(3.0) * 100.0 - 0.1
+    tanh_term = delta * 300.0
+    linear_term = delta * 100.0
     step_r = torch.where(moving_left, tanh_term, linear_term)
     failed = x_t >= task.failure_x
     step_r = torch.where(failed, torch.full_like(step_r, -1.0), step_r)
     # Don't overwrite success bonus unless failure
     prog = torch.where(success.expand_as(prog) & ~failed, prog, step_r)
-    # Clamp progress between -1 and 1
-    prog = torch.clamp(prog, -1.0, 1.0)
+    # No clamping
     return prog
 
 
