@@ -52,6 +52,13 @@ class ObservationBuilder:
     def reset(self) -> None:
         self._history.clear()
 
+    def reset_envs(self, ids: torch.Tensor) -> None:
+        """Zero stacked frames for auto-reset env indices so history does not leak."""
+        if ids is None or ids.numel() == 0 or not self._history:
+            return
+        for frame in self._history:
+            frame[ids] = 0
+
     def build(self, solver: BatchedFluidSolver) -> torch.Tensor:
         if self.cfg.preset == "legacy":
             return self._legacy(solver).float()

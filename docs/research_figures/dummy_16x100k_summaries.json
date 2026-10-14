@@ -1,0 +1,10 @@
+{
+  "before_final_success": 0.0,
+  "before_peak_success": 1.0,
+  "after_final_success": 0.9765625,
+  "after_peak_success": 1.0,
+  "after_tail_success": 0.9749375,
+  "after_final_mean_x": 34.346622467041016,
+  "after_final_act_x": -0.5160840749740601,
+  "scale": "dummy env, 16 envs x 100000 steps/env, 16 agents"
+}

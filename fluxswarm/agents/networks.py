@@ -11,6 +11,14 @@ LOG_STD_MIN = -2.0
 LOG_STD_MAX = 2.0
 
 
+def orthogonal_init_linear(module: nn.Module, gain: float = 1.0, bias: float = 0.0) -> None:
+    """Orthogonal weight init (CleanRL PPO). No-op for non-linear modules."""
+    if isinstance(module, nn.Linear):
+        nn.init.orthogonal_(module.weight, gain=gain)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, bias)
+
+
 class Actor(nn.Module):
     """Shared-weight decentralized actor: local obs -> tanh-squashed Gaussian."""
 
@@ -41,6 +49,17 @@ class Actor(nn.Module):
             self.mu_head = nn.Linear(prev, action_dim)
             self.gru = None
         self.log_std = nn.Parameter(torch.ones(action_dim) * log_std_init)
+
+    def apply_orthogonal_init(self) -> None:
+        if self.gru is not None:
+            for name, param in self.gru.named_parameters():
+                if "weight" in name:
+                    nn.init.orthogonal_(param, gain=1.0)
+                elif "bias" in name:
+                    nn.init.constant_(param, 0.0)
+        for mod in self.torso.modules():
+            orthogonal_init_linear(mod, gain=1.0)
+        orthogonal_init_linear(self.mu_head, gain=0.01)
 
     def forward(self, obs: torch.Tensor, hidden: Optional[torch.Tensor] = None):
         shape = obs.shape
@@ -95,6 +114,12 @@ class MultiHeadCritic(nn.Module):
         self.heads = nn.ModuleList([nn.Linear(prev, num_members) for _ in range(n_objectives)])
         self.num_members = num_members
 
+    def apply_orthogonal_init(self) -> None:
+        for mod in self.torso.modules():
+            orthogonal_init_linear(mod, gain=1.0)
+        for head in self.heads:
+            orthogonal_init_linear(head, gain=1.0)
+
     def forward(self, obs_joint: torch.Tensor) -> torch.Tensor:
         feat = self.torso(obs_joint)
         return torch.stack([h(feat) for h in self.heads], dim=1)
@@ -130,6 +155,10 @@ class ActorCriticMO(nn.Module):
         self.obs_local_dim = obs_local_dim
         self.actor = Actor(obs_local_dim, 2, hidden_sizes, log_std_init, recurrent=recurrent)
         self.critic = MultiHeadCritic(num_members * obs_local_dim, num_members, hidden_sizes)
+
+    def apply_orthogonal_init(self) -> None:
+        self.actor.apply_orthogonal_init()
+        self.critic.apply_orthogonal_init()
 
     def actor_parameters(self):
         return self.actor.parameters()

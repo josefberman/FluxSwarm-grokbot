@@ -63,6 +63,7 @@ class BatchedSwarmEnv:
         self.cum_objectives[ids] = 0
         self.episode_id[ids] += 1
         self._prev_pos[ids] = self.solver.swarm.pos[ids]
+        self.obs_builder.reset_envs(ids)
 
     def step(self, actions: np.ndarray | torch.Tensor) -> tuple:
         if isinstance(actions, np.ndarray):
@@ -90,7 +91,6 @@ class BatchedSwarmEnv:
                 reward_matrix[failure, :, 0] -= self.cfg.task.w_progress * 10.0
             scalar = reward_matrix.sum(dim=-1).mean(dim=-1)
 
-        obs = self.obs_builder.build(self.solver)
         done = terminations | truncations
 
         infos: list[dict[str, Any]] = []
@@ -118,8 +118,11 @@ class BatchedSwarmEnv:
                 }
             infos.append(info)
 
-        # Auto-reset done envs
+        # Auto-reset done envs, then observe the *current* state. Returning the
+        # terminal snapshot after reset would make the next policy action act on
+        # the previous episode while the simulator is already in the next one.
         self.reset_done(done)
+        obs = self.obs_builder.build(self.solver)
 
         return (
             obs.detach().cpu().numpy(),

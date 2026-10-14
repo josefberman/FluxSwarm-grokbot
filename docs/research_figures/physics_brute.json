@@ -1,0 +1,18 @@
+{
+  "policy": "brute_upstream",
+  "steps": 120,
+  "seconds": 0.6595230102539062,
+  "sec_per_step": 0.005496025085449219,
+  "start_mean_x": 50.0,
+  "end_mean_x": 30.887163367278436,
+  "delta_x": -19.112836632721564,
+  "n_episodes": 0,
+  "successes": 0,
+  "failures": 0,
+  "resolution": [
+    200,
+    4
+  ],
+  "dt_substeps": 4,
+  "batch": 2
+}
