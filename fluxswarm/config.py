@@ -110,7 +110,7 @@ class TrainConfig:
     use_action_x_prior: bool = True
     action_x_prior_warmup_fraction: float = 0.2
     actor: Literal["mlp", "recurrent"] = "mlp"
-    hidden_sizes: tuple[int, ...] = (256, 256)
+    hidden_sizes: tuple[int, ...] = (256, 128)
     log_std_init: float = -1.0
     max_grad_norm: float = 0.5
     device: str = "cuda"

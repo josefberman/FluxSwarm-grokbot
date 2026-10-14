@@ -18,7 +18,7 @@ class Actor(nn.Module):
         self,
         obs_dim: int,
         action_dim: int = 2,
-        hidden_sizes: tuple[int, ...] = (256, 256),
+        hidden_sizes: tuple[int, ...] = (256, 128),
         log_std_init: float = -1.0,
         recurrent: bool = False,
     ):
@@ -82,7 +82,7 @@ class MultiHeadCritic(nn.Module):
         self,
         joint_dim: int,
         num_members: int,
-        hidden_sizes: tuple[int, ...] = (256, 256),
+        hidden_sizes: tuple[int, ...] = (256, 128),
         n_objectives: int = 3,
     ):
         super().__init__()
@@ -103,7 +103,7 @@ class MultiHeadCritic(nn.Module):
 class SingleCritic(nn.Module):
     """Single-objective centralized critic for baseline PPO."""
 
-    def __init__(self, joint_dim: int, num_members: int, hidden_sizes: tuple[int, ...] = (256, 256)):
+    def __init__(self, joint_dim: int, num_members: int, hidden_sizes: tuple[int, ...] = (256, 128)):
         super().__init__()
         layers: list[nn.Module] = []
         prev = joint_dim
@@ -121,7 +121,7 @@ class ActorCriticMO(nn.Module):
         self,
         num_members: int,
         obs_local_dim: int,
-        hidden_sizes: tuple[int, ...] = (256, 256),
+        hidden_sizes: tuple[int, ...] = (256, 128),
         log_std_init: float = -1.0,
         recurrent: bool = False,
     ):

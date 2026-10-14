@@ -119,7 +119,8 @@ def _stitch_logs(frames: list[pd.DataFrame]) -> pd.DataFrame:
         parts.append(d)
     cat = pd.concat(parts, ignore_index=True)
     if "global_step" in cat.columns:
-        cat = cat.sort_values("global_step").drop_duplicates("global_step", keep="last")
+        subset = ["global_step", "env"] if "env" in cat.columns else ["global_step"]
+        cat = cat.sort_values(subset).drop_duplicates(subset, keep="last")
     return cat.reset_index(drop=True)
 
 
@@ -270,17 +271,118 @@ def plot_episode_length(run_dir: Path, out: Optional[Path] = None) -> Path:
     eps = _load_episodes(run_dir)
     fig, ax = plt.subplots(figsize=(10, 4))
     if eps is not None and "steps" in eps.columns:
-        x = eps["episode"] if "episode" in eps.columns else pd.Series(eps.index, index=eps.index)
-        roll = eps["steps"].rolling(5, center=True, min_periods=1).mean()
-        std = eps["steps"].rolling(5, min_periods=1).std().fillna(0)
-        ax.plot(x, roll, color="gray")
-        ax.fill_between(x, roll - std, roll + std, color="gray", alpha=0.2)
+        if "env" in eps.columns and "episode" in eps.columns and eps["env"].nunique() > 1:
+            per = eps.groupby("episode", sort=True)["steps"]
+            roll, std = per.mean(), per.std().fillna(0)
+            x = roll.index.to_numpy()
+            y = roll.to_numpy()
+            band = std.to_numpy()
+        else:
+            work = eps.sort_values("episode") if "episode" in eps.columns else eps
+            y = work["steps"].rolling(5, center=True, min_periods=1).mean().to_numpy()
+            band = work["steps"].rolling(5, center=True, min_periods=1).std().fillna(0).to_numpy()
+            x = work["episode"].to_numpy() if "episode" in work.columns else np.arange(len(work))
+        ax.plot(x, y, color="gray")
+        ax.fill_between(x, np.maximum(y - band, 0.0), y + band, color="gray", alpha=0.2)
     ax.set_xlabel("episode")
     ax.set_ylabel("Episode length (steps)")
     fig.tight_layout()
     fig.savefig(out, dpi=300)
     plt.close(fig)
     _write_sidecar(out, {"figure": "episode_length_per_episode", "run_ids": _chain_ids(run_dir)})
+    return out
+
+
+def success_rate_figure(success: np.ndarray, window: int) -> plt.Figure:
+    """Moving-window success rate. ``success`` is 1 for a successful episode, else 0."""
+    fig, ax = plt.subplots(figsize=(10, 4))
+    success = np.asarray(success, dtype=float)
+    if success.size:
+        w = min(max(1, int(window)), int(success.size))
+        rate = pd.Series(success).rolling(w, min_periods=max(1, w // 4)).mean()
+        ax.plot(np.arange(success.size), rate.to_numpy(), color="#2F67B1", lw=2.0)
+        ax.set_ylim(-0.02, 1.02)
+        ax.axhline(0.0, color="0.7", lw=0.6)
+        ax.axhline(1.0, color="0.7", lw=0.6)
+    ax.set_xlabel("Completed episodes")
+    ax.set_ylabel("Success rate")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def plot_success_rate(run_dir: Path, out: Optional[Path] = None, window: Optional[int] = None) -> Path:
+    """Moving-window success rate over completed env-episodes."""
+    run_dir = Path(run_dir)
+    out = out or (run_dir / "figures" / "success_rate.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    eps = _load_episodes(run_dir)
+    if eps is not None and "reason" in eps.columns and len(eps):
+        work = eps.copy()
+        sort_cols = [c for c in ("episode", "env") if c in work.columns]
+        if sort_cols:
+            work = work.sort_values(sort_cols)
+        n_env = int(work["env"].nunique()) if "env" in work.columns else 1
+        w = window if window is not None else max(32, 8 * n_env)
+        success = (work["reason"].astype(str) == "success").to_numpy(dtype=float)
+    else:
+        w = 1
+        success = np.zeros(0)
+    fig = success_rate_figure(success, w)
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    _write_sidecar(out, {"figure": "success_rate", "run_ids": _chain_ids(run_dir)})
+    return out
+
+
+def plot_progress_vs_episode_length(run_dir: Path, out: Optional[Path] = None) -> Path:
+    from fluxswarm.physics.inflow import beat_waveform
+
+    run_dir = Path(run_dir)
+    out = out or (run_dir / "figures" / "progress_vs_episode_length.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    steps = _load_steps(run_dir)
+    cfg = _load_config(run_dir).get("sim", {})
+    amp = float(cfg.get("inflow_velocity", 400.0))
+    period = float(cfg.get("inflow_period", 1.0))
+    fig, ax = plt.subplots(figsize=(8, 6))
+    if steps is not None and "episode" in steps.columns:
+        xs = [c for c in steps.columns if c.startswith("location_") and c.endswith("_x")]
+        if xs:
+            work = steps.copy()
+            work["_com_x"] = work[xs].mean(axis=1)
+            keys = ["episode", "env"] if "env" in work.columns else ["episode"]
+            g = work.groupby(keys, sort=True)
+            first = g["_com_x"].first()
+            last = g["_com_x"].last()
+            dx = last - first
+            length = g.size().rename("length")
+            if "episode_time" in work.columns:
+                t_last = g["episode_time"].last()
+            else:
+                t_last = pd.Series(0.0, index=dx.index)
+            inflow = np.asarray(
+                beat_waveform(torch.tensor(t_last.to_numpy(), dtype=torch.float64), amp, period)
+            )
+            sc = ax.scatter(
+                length.to_numpy(),
+                dx.to_numpy(),
+                c=inflow,
+                cmap="coolwarm",
+                s=28,
+                alpha=0.85,
+                edgecolors="none",
+                zorder=3,
+            )
+            cb = fig.colorbar(sc, ax=ax)
+            cb.set_label("Last inflow (mm/s)")
+    ax.set_xlabel("Episode length (steps)")
+    ax.set_ylabel(r"$\Delta x_\mathrm{COM}$ (mm)")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    _write_sidecar(out, {"figure": "progress_vs_episode_length", "run_ids": _chain_ids(run_dir)})
     return out
 
 
@@ -544,6 +646,8 @@ def generate_all_for_run(run_dir: Path, *, video: bool = False) -> list[Path]:
     paths = [
         plot_reward_per_episode(run_dir),
         plot_episode_length(run_dir),
+        plot_success_rate(run_dir),
+        plot_progress_vs_episode_length(run_dir),
         plot_center_of_mass(run_dir),
         plot_dispersion(run_dir),
         plot_velocity_temporal_profile(run_dir),
