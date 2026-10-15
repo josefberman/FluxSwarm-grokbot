@@ -25,6 +25,10 @@ class SimConfig:
     inflow_velocity: float = 400.0
     inflow_period: float = 1.0
     fluid_density: float = 1.06
+    # Drive each env's pulsatile inflow with its own episode clock and blank the
+    # fluid rings only for envs that just reset. False reproduces the legacy
+    # behaviour (batch-mean clock; all envs blanked when any env resets).
+    per_env_clock: bool = False
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -274,6 +278,8 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.train.clip_vloss = bool(args.clip_vloss)
     if getattr(args, "terminal_bonus_legacy", None) is not None:
         cfg.task.terminal_bonus_legacy = bool(args.terminal_bonus_legacy)
+    if getattr(args, "per_env_clock", None) is not None:
+        cfg.sim.per_env_clock = bool(args.per_env_clock)
     if getattr(args, "no_save_fields", False):
         cfg.train.save_fields = False
 
@@ -302,6 +308,11 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
     g.add_argument("--total-time", type=float, default=None, help=f"sim horizon used for time_steps, s ({d.sim.total_time})")
     g.add_argument("--dt-substeps", type=int, default=None, help=f"fluid substeps per RL step ({d.sim.dt_substeps})")
     g.add_argument("--inflow-velocity", type=float, default=None, help=f"peak inflow centerline velocity, mm/s ({d.sim.inflow_velocity})")
+
+    g.add_argument("--per-env-clock", dest="per_env_clock", action="store_true", default=None,
+                   help=f"per-env inflow clock + per-env ring blanking ({d.sim.per_env_clock})")
+    g.add_argument("--no-per-env-clock", dest="per_env_clock", action="store_false", default=None,
+                   help="legacy batch-mean inflow clock")
 
     g = parser.add_argument_group("swarm")
     g.add_argument("--swarm-num-x", type=int, default=None, help=f"members along x ({d.swarm.num_x})")

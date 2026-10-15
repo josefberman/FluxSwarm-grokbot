@@ -130,3 +130,54 @@ def test_trainer_smoke_with_value_norm(tmp_path):
     assert (rd / "episodes.jsonl").read_text().strip()
     ck = torch.load(rd / "models" / "model_latest.pt", weights_only=False)
     assert "ret_norm" in ck
+
+
+def test_per_env_inflow_clock_matches_scalar_when_synchronized():
+    from fluxswarm.config import SimConfig
+    from fluxswarm.physics.torch_fluid import TorchFluidSolver
+
+    sim = SimConfig(resolution_scale=1.0)
+    a = TorchFluidSolver(sim, 3, torch.device("cpu"))
+    b = TorchFluidSolver(sim, 3, torch.device("cpu"))
+    a.apply_inflow(0.3, 0.01)
+    b.apply_inflow(torch.full((3,), 0.3, dtype=torch.float64), 0.01)
+    assert torch.allclose(a.u, b.u)
+
+
+def test_per_env_inflow_clock_uses_each_env_time():
+    from fluxswarm.config import SimConfig
+    from fluxswarm.physics.inflow import beat_waveform
+    from fluxswarm.physics.torch_fluid import TorchFluidSolver
+
+    sim = SimConfig(resolution_scale=1.0)
+    f = TorchFluidSolver(sim, 2, torch.device("cpu"))
+    u0 = f.u.clone()
+    t = torch.tensor([0.0, 0.4], dtype=torch.float64)
+    f.apply_inflow(t, 0.01)
+    d = (f.u - u0).amax(dim=(1, 2))
+    amp = sim.inflow_velocity
+    exp = [float(beat_waveform(x + 0.01, amp) - beat_waveform(x, amp)) for x in (0.0, 0.4)]
+    pmax = float(f.parabolic.max())
+    for k in range(2):
+        if exp[k] > 0:
+            assert abs(float(d[k]) - exp[k] * pmax) < 1e-6 * max(1.0, abs(exp[k]))
+
+
+def test_per_env_clock_blanks_only_fresh_envs():
+    from fluxswarm.config import Config
+    from fluxswarm.envs.swarm_env import BatchedSwarmEnv
+
+    cfg = Config()
+    cfg.sim.resolution_scale = 2.0
+    cfg.sim.dt_substeps = 2
+    cfg.sim.per_env_clock = True
+    cfg.train.use_action_x_prior = False
+    env = BatchedSwarmEnv(cfg, batch=2, device="cpu")
+    env.reset(seed=0)
+    a = np.zeros((2, env.n, 2), dtype=np.float32)
+    for _ in range(3):
+        env.step(a)
+    env.solver.episode_time[1] = 0.0  # pretend env 1 just reset
+    env.solver.step(torch.zeros(2, env.n, 2, dtype=torch.float64))
+    # the pre-step ring sample of env 0 is still a real fluid sample (non-zero drag input)
+    assert float(env.solver.last_drag[0].abs().sum()) > 0

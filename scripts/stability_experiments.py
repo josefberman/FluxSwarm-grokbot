@@ -50,6 +50,8 @@ def apply_variant(cfg: Config, variant: str) -> dict:
     for v in variant.split("+"):
         if v == "base":
             pass
+        elif v == "clock":
+            cfg.sim.per_env_clock = True
         elif v == "popart":
             cfg.train.value_norm = "popart"
         elif v == "retnorm":
@@ -83,7 +85,9 @@ def run(env_kind: str, variant: str, seed: int, steps: int, n_agents: int) -> Pa
     env_kw = apply_variant(cfg, variant)
     cfg.run.tag = f"{env_kind}_{variant}_s{seed}"
     t0 = time.time()
-    if env_kind == "dummy":
+    if env_kind in ("dummy", "hard"):
+        if env_kind == "hard":
+            env_kw.update(drift=2.5, drift_profile="poiseuille", drift_jitter=0.3)
         env = DummyUpstreamEnv(cfg, batch=16, n_agents=n_agents, device="cpu", reward_mode="legacy", **env_kw)
         rd = train_momappo(cfg, env=env, recorder=LiteRecorder(cfg))
     else:
@@ -99,7 +103,7 @@ def run(env_kind: str, variant: str, seed: int, steps: int, n_agents: int) -> Pa
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--env", default="dummy", choices=["dummy", "physics"])
+    ap.add_argument("--env", default="dummy", choices=["dummy", "hard", "physics"])
     ap.add_argument("--variants", nargs="+", default=["base"])
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--steps", type=int, default=20_000)

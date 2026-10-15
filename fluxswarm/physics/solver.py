@@ -105,7 +105,18 @@ class BatchedFluidSolver:
         self.swarm.action = actions
 
         t0 = self.episode_time
-        if float(t0.min()) > 0:
+        per_env = bool(getattr(self.sim, "per_env_clock", False))
+        if per_env:
+            # Sample rings for every env, then blank only the envs that just reset
+            # (legacy blanked *all* envs whenever *any* env was at t=0).
+            self._sample_rings()
+            fresh = t0 <= 0
+            if bool(fresh.any()):
+                for name in ("last_pressure_ring", "last_vel_ring_u", "last_vel_ring_v"):
+                    getattr(self, name)[fresh] = 0.0
+                self.last_fluid_center_u[fresh] = 0.0
+                self.last_fluid_center_v[fresh] = 0.0
+        elif float(t0.min()) > 0:
             self._sample_rings()
         else:
             B, N, k = self.batch, self.swarm.n, self.ring_k
@@ -152,7 +163,11 @@ class BatchedFluidSolver:
 
         Re_inv = self.sim.viscosity / max(self.sim.inflow_velocity * self.sim.length_y, 1e-8)
         self.torch_fluid.substep_loop(
-            t0=float(self.episode_time.mean().item()),
+            t0=(
+                self.episode_time.clone()
+                if per_env
+                else float(self.episode_time.mean().item())
+            ),
             dt=dt,
             n_sub=self.sim.substeps,
             pos=self.swarm.pos,
