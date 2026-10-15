@@ -16,10 +16,23 @@ import numpy as np
 import pandas as pd
 
 
+def _jl(path: Path) -> list[dict]:
+    rows = []
+    for l in path.read_text().splitlines():
+        try:
+            rows.append(json.loads(l))
+        except json.JSONDecodeError:
+            pass  # truncated tail of a killed run
+    return rows
+
+
+MAX_UPDATES = 10**9
+
+
 def load(run: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    m = pd.DataFrame([json.loads(l) for l in (run / "metrics.jsonl").read_text().splitlines() if l.strip()])
-    ep_path = run / "episodes.jsonl"
-    e = pd.DataFrame([json.loads(l) for l in ep_path.read_text().splitlines() if l.strip()]) if ep_path.exists() else pd.DataFrame()
+    m = pd.DataFrame(_jl(run / "metrics.jsonl")).iloc[:MAX_UPDATES]
+    e = pd.DataFrame(_jl(run / "episodes.jsonl"))
+    e = e[e["update"] < len(m)].reset_index(drop=True)
     return m, e
 
 
@@ -110,7 +123,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("globs", nargs="+")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--max-updates", type=int, default=None, help="truncate runs (compare equal budgets)")
     a = ap.parse_args()
+    if a.max_updates:
+        MAX_UPDATES = a.max_updates
     runs = sorted({Path(p) for g in a.globs for p in glob.glob(g)})
     results = [analyze(r) for r in runs]
     txt = json.dumps(results, indent=1)
