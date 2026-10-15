@@ -62,6 +62,8 @@ class DummyUpstreamEnv:
         speed: float = 1.5,
         dt: float = 1.0,
         max_steps: int = 80,
+        reward_mode: str = "binary",
+        terminal_bonus: float = 0.0,
     ):
         self.cfg = cfg
         self.batch = batch or cfg.train.batch_envs
@@ -72,6 +74,10 @@ class DummyUpstreamEnv:
         self.speed = float(speed)
         self.dt = float(dt)
         self.max_steps = int(max_steps)
+        # "binary": +1 moving upstream else -0.1 (original). "legacy": mimics the
+        # unclamped physics legacy reward (300*dx/L upstream, 100*dx/L otherwise).
+        self.reward_mode = reward_mode
+        self.terminal_bonus = float(terminal_bonus)
         self.success_x = float(cfg.task.success_x)
         self.failure_x = float(cfg.task.failure_x)
         self.start_x = 0.5 * (self.success_x + self.failure_x)
@@ -144,7 +150,11 @@ class DummyUpstreamEnv:
         xs = s.pos[..., 0]
         dx = prev_pos[..., 0] - xs
         moving_left = dx > 0
-        progress = torch.where(moving_left, torch.ones_like(dx), torch.full_like(dx, -0.1))
+        if self.reward_mode == "legacy":
+            L = max(self.failure_x - self.success_x, 1e-6)
+            progress = torch.where(moving_left, dx / L * 300.0, dx / L * 100.0)
+        else:
+            progress = torch.where(moving_left, torch.ones_like(dx), torch.full_like(dx, -0.1))
         mag = torch.linalg.norm(actions, dim=-1).clamp(0.0, 1.0)
         energy = 1.0 - mag
         delta = actions - s.prev_action
@@ -164,6 +174,10 @@ class DummyUpstreamEnv:
         terminations = success | any_fail
         truncations = (self.episode_steps >= self.max_steps) & ~terminations
         done = terminations | truncations
+        if self.terminal_bonus != 0.0:
+            reward_matrix[success, :, 0] += self.w[0] * self.terminal_bonus
+            reward_matrix[any_fail & ~success, :, 0] -= self.w[0] * self.terminal_bonus
+            scalar = reward_matrix.sum(dim=-1).mean(dim=-1)
 
         infos: list[dict[str, Any]] = []
         for b in range(self.batch):

@@ -14,6 +14,7 @@ from tqdm import trange
 
 from fluxswarm.agents.networks import ActorCriticMO, tanh_log_prob, tanh_sample
 from fluxswarm.agents.pcgrad import pcgrad_merge_actor
+from fluxswarm.agents.stability import ReturnNormalizer, SuccessTracker, lr_at
 from fluxswarm.config import Config
 from fluxswarm.envs.swarm_env import BatchedSwarmEnv
 from fluxswarm.runs.recorder import RunRecorder
@@ -88,8 +89,9 @@ def pack_checkpoint(
     obs_local_dim: int,
     global_steps: int,
     use_pcgrad: bool,
+    ret_norm: "Optional[ReturnNormalizer]" = None,
 ) -> dict:
-    return {
+    out = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "obs_norm": obs_norm.state_dict(),
@@ -98,6 +100,9 @@ def pack_checkpoint(
         "total_timesteps": global_steps,
         "use_pcgrad": use_pcgrad,
     }
+    if ret_norm is not None:
+        out["ret_norm"] = ret_norm.state_dict()
+    return out
 
 
 def apply_checkpoint(
@@ -109,6 +114,7 @@ def apply_checkpoint(
     *,
     num_members: int,
     obs_local_dim: int,
+    ret_norm: "Optional[ReturnNormalizer]" = None,
 ) -> int:
     if int(ckpt.get("num_members", num_members)) != num_members:
         raise ValueError(
@@ -122,6 +128,8 @@ def apply_checkpoint(
     optimizer.load_state_dict(ckpt["optimizer"])
     if "obs_norm" in ckpt:
         obs_norm.load_state_dict(ckpt["obs_norm"], device)
+    if ret_norm is not None and "ret_norm" in ckpt:
+        ret_norm.load_state_dict(ckpt["ret_norm"], device)
     return int(ckpt.get("total_timesteps", 0))
 
 
@@ -276,6 +284,13 @@ def train_momappo(
         model.apply_orthogonal_init()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, eps=cfg.train.adam_eps)
     obs_norm = RunningNorm(obs_dim, device)
+    value_norm = str(getattr(cfg.train, "value_norm", "off"))
+    ret_norm = ReturnNormalizer(3, device, beta=cfg.train.value_norm_beta) if value_norm != "off" else None
+
+    def critic_values(joint_obs: torch.Tensor) -> torch.Tensor:
+        """Critic output in reward units, shape (B, N, 3)."""
+        v = model.critic(joint_obs).permute(0, 2, 1)
+        return ret_norm.denormalize(v) if ret_norm is not None else v
 
     models_dir = recorder.run_dir / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -301,6 +316,7 @@ def train_momappo(
             device,
             num_members=N,
             obs_local_dim=obs_dim,
+            ret_norm=ret_norm,
         )
         print(f"Resumed from {resume_ckpt_path} at global_steps={global_steps}")
 
@@ -320,8 +336,9 @@ def train_momappo(
     num_updates = max(1, total // (n_steps * envs_per_step))
     prior_warmup_rows = max(1, int(num_updates * n_steps * cfg.train.action_x_prior_warmup_fraction))
     success_window = max(32, 8 * envs_per_step)
-    success_outcomes: list[float] = []
-    success_min = max(1, success_window // 4)
+    tracker = SuccessTracker(success_window, ema_beta=cfg.train.success_ema_beta)
+    episodes_path = recorder.run_dir / "episodes.jsonl"
+    ep_file = episodes_path.open("a") if cfg.train.log_episodes else None
 
     metrics_path = recorder.run_dir / "metrics.jsonl"
     best_success = -1.0
@@ -336,6 +353,9 @@ def train_momappo(
 
     pbar = trange(num_updates, desc="MOMAPPO")
     for update in pbar:
+        cur_lr = lr_at(update, num_updates, cfg.train.lr, cfg.train.lr_schedule, cfg.train.lr_final_fraction)
+        for g in optimizer.param_groups:
+            g["lr"] = cur_lr
         buf = RolloutBuffer(n_steps, B, N, obs_dim, device)
         for t in range(n_steps):
             with torch.no_grad():
@@ -352,7 +372,7 @@ def train_momappo(
                     action = raw_action
 
                 joint = obs.reshape(B, N * obs_dim)
-                values = model.critic(joint).permute(0, 2, 1)
+                values = critic_values(joint)
 
             action_np = action.detach().cpu().numpy()
             cpu_fut = None
@@ -387,22 +407,28 @@ def train_momappo(
                 info,
                 save_fields=cfg.train.save_fields and (global_steps % 50 == 0),
             )
-            for inf in info["infos"]:
-                ep = inf.get("episode")
-                if ep is not None:
-                    success_outcomes.append(1.0 if ep.get("reason") == "success" else 0.0)
-            if c_info is not None:
-                for inf in c_info["infos"]:
+            sources = [("train", info)] + ([("mirror", c_info)] if c_info is not None else [])
+            for src, inf_all in sources:
+                for b_idx, inf in enumerate(inf_all["infos"]):
                     ep = inf.get("episode")
-                    if ep is not None:
-                        success_outcomes.append(1.0 if ep.get("reason") == "success" else 0.0)
-            n_done = len(success_outcomes)
-            if n_done >= success_min:
-                writer.add_scalar(
-                    "objectives/success_rate",
-                    float(np.mean(success_outcomes[-success_window:])),
-                    global_steps,
-                )
+                    if ep is None:
+                        continue
+                    succ = ep.get("reason") == "success"
+                    tracker.add(succ, source=src)
+                    if ep_file is not None:
+                        ep_file.write(json.dumps({
+                            "global_steps": int(global_steps),
+                            "update": int(update),
+                            "t": int(t),
+                            "env": int(b_idx),
+                            "source": src,
+                            "success": bool(succ),
+                            "reason": str(ep.get("reason", "")),
+                            "steps": int(ep.get("steps", 0)),
+                        }) + "\n")
+            if tracker.ready:
+                # Historical tag (kept verbatim): last-`success_window` episodes, all sources.
+                writer.add_scalar("objectives/success_rate", tracker.window_rate(), global_steps)
             if B > 0 and (global_steps % 10 == 0):
                 writer.add_scalar("objectives/progress", float(reward_matrix[0, :, 0].mean()), global_steps)
                 writer.add_scalar("objectives/energy", float(reward_matrix[0, :, 1].mean()), global_steps)
@@ -436,7 +462,7 @@ def train_momappo(
         # Bootstrap
         with torch.no_grad():
             joint = obs.reshape(B, N * obs_dim)
-            last_val = model.critic(joint).permute(0, 2, 1)
+            last_val = critic_values(joint)
             last_done = torch.zeros(B, device=device)
 
         advs, rets = [], []
@@ -461,6 +487,9 @@ def train_momappo(
         adv = torch.stack(advs, dim=-1)
         ret = torch.stack(rets, dim=-1)
 
+        ret_std_raw = [float(ret[..., k].std()) for k in range(3)]
+        if ret_norm is not None:
+            ret_norm.update(ret, heads=model.critic.heads if value_norm == "popart" else None)
         data = buf.get(adv, ret)
         n_samples = data["obs"].shape[0]
         batch_size = min(max(int(cfg.train.batch_size), 1), n_samples)
@@ -469,11 +498,21 @@ def train_momappo(
         last_approx_kl = 0.0
         last_ev = explained_variance(buf.values, ret)
         target_kl = float(cfg.train.target_kl or 0.0)
+        clip_v = float(cfg.train.clip_coef)
         stop_ppo = False
+        epochs_run = 0
+        n_minibatches = 0
+        grad_norms: list[float] = []
+        actor_grad_norms: list[float] = []
+        vloss_heads = np.zeros(3)
+        vloss_n = 0
+        kls: list[float] = []
+        clipfracs: list[float] = []
 
         for _epoch in range(cfg.train.update_epochs):
             if stop_ppo:
                 break
+            epochs_run += 1
             np.random.shuffle(idxs)
             for start in range(0, n_samples, batch_size):
                 mb = idxs[start : start + batch_size]
@@ -505,8 +544,22 @@ def train_momappo(
                     continue
 
                 joint = b_obs.reshape(b_obs.shape[0], N * obs_dim)
-                values = model.critic(joint).permute(0, 2, 1)
-                loss_v = 0.5 * ((values - b_ret) ** 2).mean()
+                values = model.critic(joint).permute(0, 2, 1)  # normalized if ret_norm
+                b_oldv = data["values"][mb]
+                if ret_norm is not None:
+                    tgt = ret_norm.normalize(b_ret)
+                    oldv = ret_norm.normalize(b_oldv)
+                else:
+                    tgt, oldv = b_ret, b_oldv
+                sq = (values - tgt) ** 2
+                if cfg.train.clip_vloss:
+                    v_clip = oldv + (values - oldv).clamp(-clip_v, clip_v)
+                    sq = torch.max(sq, (v_clip - tgt) ** 2)
+                loss_v = 0.5 * sq.mean()
+                with torch.no_grad():
+                    raw_v = ret_norm.denormalize(values) if ret_norm is not None else values
+                    vloss_heads += (0.5 * (raw_v - b_ret) ** 2).mean(dim=(0, 1)).cpu().numpy()
+                    vloss_n += 1
                 entropy = dist.entropy().sum(dim=-1).mean()
                 if not torch.isfinite(loss_v) or not torch.isfinite(entropy):
                     continue
@@ -520,6 +573,11 @@ def train_momappo(
                     )
                 else:
                     sum(loss_pis).backward(retain_graph=True)
+                with torch.no_grad():
+                    a_sq = sum(
+                        float(p.grad.pow(2).sum()) for p in model.actor.parameters() if p.grad is not None
+                    )
+                actor_grad_norms.append(a_sq ** 0.5)
 
                 aux = cfg.train.vf_coef * loss_v - cfg.train.ent_coef * entropy
                 aux.backward()
@@ -529,14 +587,19 @@ def train_momappo(
                 ):
                     optimizer.zero_grad(set_to_none=True)
                     continue
-                nn.utils.clip_grad_norm_(model.parameters(), cfg.train.max_grad_norm)
+                gn = nn.utils.clip_grad_norm_(model.parameters(), cfg.train.max_grad_norm)
+                grad_norms.append(float(gn))
                 optimizer.step()
+                n_minibatches += 1
                 last_entropy = entropy.detach()
                 last_approx_kl = float((b_old_logp - new_logp).mean().detach())
+                kls.append(last_approx_kl)
+                clipfracs.append(float(((ratio - 1.0).abs() > clip).float().mean()))
                 if target_kl > 0 and last_approx_kl > target_kl:
                     stop_ppo = True
                     break
 
+        tracker.end_update()
         ckpt = pack_checkpoint(
             model,
             optimizer,
@@ -545,6 +608,7 @@ def train_momappo(
             obs_local_dim=obs_dim,
             global_steps=global_steps,
             use_pcgrad=cfg.train.use_pcgrad,
+            ret_norm=ret_norm,
         )
         torch.save(ckpt, latest)
         if update % 10 == 0 or update == num_updates - 1:
@@ -565,6 +629,39 @@ def train_momappo(
         writer.add_scalar("training/approx_kl", last_approx_kl, global_steps)
         writer.add_scalar("training/explained_variance", last_ev, global_steps)
         writer.add_scalar("swarm/mean_x", mean_x, global_steps)
+        # --- stability diagnostics ---
+        sr_ema = tracker.ema()
+        if sr_ema is not None:
+            writer.add_scalar("objectives/success_rate_ema", sr_ema, global_steps)
+        if tracker.last_update_rate is not None:
+            writer.add_scalar("objectives/success_rate_update", tracker.last_update_rate, global_steps)
+        writer.add_scalar("objectives/success_rate_train", tracker.train_window_rate(), global_steps)
+        mirror_sr = tracker.mirror_window_rate()
+        if mirror_sr is not None:
+            writer.add_scalar("objectives/success_rate_mirror", mirror_sr, global_steps)
+        writer.add_scalar("objectives/episodes_in_window", tracker.episodes_in_window, global_steps)
+        writer.add_scalar("objectives/episodes_this_update", tracker.last_update_n, global_steps)
+        log_std_mean = float(model.actor.log_std.detach().mean())
+        vl = (vloss_heads / max(vloss_n, 1)).tolist()
+        gstd = float(np.std(grad_norms)) if grad_norms else 0.0
+        diag = {
+            "training/epochs_run": epochs_run,
+            "training/minibatches": n_minibatches,
+            "training/early_stop": float(stop_ppo),
+            "training/approx_kl_max": max(kls) if kls else 0.0,
+            "training/clipfrac": float(np.mean(clipfracs)) if clipfracs else 0.0,
+            "training/grad_norm": float(np.mean(grad_norms)) if grad_norms else 0.0,
+            "training/grad_norm_std": gstd,
+            "training/actor_grad_norm": float(np.mean(actor_grad_norms)) if actor_grad_norms else 0.0,
+            "training/log_std": log_std_mean,
+            "training/lr": cur_lr,
+            "losses/value_progress": vl[0],
+            "losses/value_energy": vl[1],
+            "losses/value_smooth": vl[2],
+            "losses/return_std_progress": ret_std_raw[0],
+        }
+        for k_tag, v_tag in diag.items():
+            writer.add_scalar(k_tag, v_tag, global_steps)
         row = {
             "update": int(update),
             "global_steps": int(global_steps),
@@ -577,6 +674,26 @@ def train_momappo(
             "entropy": float(last_entropy),
             "approx_kl": last_approx_kl,
             "explained_variance": last_ev,
+            "success_rate_window": tracker.window_rate(),
+            "success_rate_ema": sr_ema,
+            "success_rate_update": tracker.last_update_rate,
+            "success_rate_train": tracker.train_window_rate(),
+            "episodes_in_window": tracker.episodes_in_window,
+            "episodes_this_update": tracker.last_update_n,
+            "epochs_run": epochs_run,
+            "minibatches": n_minibatches,
+            "early_stop": bool(stop_ppo),
+            "approx_kl_max": max(kls) if kls else 0.0,
+            "clipfrac": float(np.mean(clipfracs)) if clipfracs else 0.0,
+            "grad_norm": float(np.mean(grad_norms)) if grad_norms else 0.0,
+            "grad_norm_std": gstd,
+            "actor_grad_norm": float(np.mean(actor_grad_norms)) if actor_grad_norms else 0.0,
+            "actor_grad_norm_std": float(np.std(actor_grad_norms)) if actor_grad_norms else 0.0,
+            "log_std": log_std_mean,
+            "lr": cur_lr,
+            "value_loss": vl,
+            "return_std": ret_std_raw,
+            "ev_heads": [explained_variance(buf.values[..., k], ret[..., k]) for k in range(3)],
         }
         with metrics_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
@@ -591,6 +708,8 @@ def train_momappo(
         )
 
     writer.close()
+    if ep_file is not None:
+        ep_file.close()
     recorder.close()
     if cpu_pool is not None:
         cpu_pool.shutdown(wait=True)

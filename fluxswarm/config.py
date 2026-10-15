@@ -77,6 +77,10 @@ class TaskConfig:
     w_progress: float = 1.0
     w_energy: float = 1.0
     w_smooth: float = 1.0
+    # Terminal +/- bonus on the progress objective (x w_progress). Always applied
+    # in potential mode; legacy mode only when terminal_bonus_legacy is True.
+    terminal_bonus: float = 10.0
+    terminal_bonus_legacy: bool = False
 
 
 @dataclass
@@ -130,6 +134,14 @@ class TrainConfig:
     tensorboard_port: int = 6006
     resume: bool = True
     resume_from: Optional[str] = None
+    # --- stability options (see docs/research_log_stability.md) ---
+    value_norm: Literal["off", "running", "popart"] = "off"
+    value_norm_beta: float = 0.0  # 0 = exact running stats; else EMA weight
+    clip_vloss: bool = False
+    lr_schedule: Literal["constant", "linear", "cosine"] = "constant"
+    lr_final_fraction: float = 0.1
+    success_ema_beta: float = 0.9  # per-update decay for objectives/success_rate_ema
+    log_episodes: bool = True  # write episodes.jsonl (one row per finished episode)
 
 
 @dataclass
@@ -230,6 +242,11 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "tensorboard_port": ("train", "tensorboard_port"),
         "resume_from": ("train", "resume_from"),
         "actor": ("train", "actor"),
+        "value_norm": ("train", "value_norm"),
+        "lr_schedule": ("train", "lr_schedule"),
+        "lr_final_fraction": ("train", "lr_final_fraction"),
+        "success_ema_beta": ("train", "success_ema_beta"),
+        "terminal_bonus": ("task", "terminal_bonus"),
         "output_root": ("run", "output_root"),
         "tag": ("run", "tag"),
         "wall_policy_mode": ("run", "wall_policy_mode"),
@@ -253,6 +270,10 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.train.use_action_x_prior = args.use_action_x_prior
     if getattr(args, "action_x_prior_warmup_fraction", None) is not None:
         cfg.train.action_x_prior_warmup_fraction = args.action_x_prior_warmup_fraction
+    if getattr(args, "clip_vloss", None) is not None:
+        cfg.train.clip_vloss = bool(args.clip_vloss)
+    if getattr(args, "terminal_bonus_legacy", None) is not None:
+        cfg.task.terminal_bonus_legacy = bool(args.terminal_bonus_legacy)
     if getattr(args, "no_save_fields", False):
         cfg.train.save_fields = False
 
@@ -304,6 +325,15 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
     g.add_argument("--w-progress", type=float, default=None, help=f"progress reward weight ({d.task.w_progress})")
     g.add_argument("--w-energy", type=float, default=None, help=f"energy reward weight ({d.task.w_energy})")
     g.add_argument("--w-smooth", type=float, default=None, help=f"smoothness reward weight ({d.task.w_smooth})")
+
+    g.add_argument("--terminal-bonus", type=float, default=None, help=f"terminal +/- progress bonus ({d.task.terminal_bonus})")
+    g.add_argument(
+        "--terminal-bonus-legacy",
+        dest="terminal_bonus_legacy",
+        action="store_true",
+        default=None,
+        help=f"also apply --terminal-bonus in legacy progress mode (default {d.task.terminal_bonus_legacy})",
+    )
 
     g = parser.add_argument_group("observations")
     g.add_argument(
@@ -507,6 +537,18 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
             "(weights, optimizer, obs-norm, global steps; skip action-x-prior warmup)"
         ),
     )
+
+    g.add_argument(
+        "--value-norm",
+        choices=["off", "running", "popart"],
+        default=None,
+        help=f"critic return normalization ({d.train.value_norm}); popart also rescales heads",
+    )
+    g.add_argument("--clip-vloss", dest="clip_vloss", action="store_true", default=None, help=f"PPO-style value clipping ({d.train.clip_vloss})")
+    g.add_argument("--no-clip-vloss", dest="clip_vloss", action="store_false", default=None, help="disable value clipping")
+    g.add_argument("--lr-schedule", choices=["constant", "linear", "cosine"], default=None, help=f"LR schedule ({d.train.lr_schedule})")
+    g.add_argument("--lr-final-fraction", type=float, default=None, help=f"final LR as fraction of --lr ({d.train.lr_final_fraction})")
+    g.add_argument("--success-ema-beta", type=float, default=None, help=f"per-update decay of success_rate_ema ({d.train.success_ema_beta})")
 
     g = parser.add_argument_group("run")
     g.add_argument("--output-root", type=str, default=None, help=f"run output directory ({d.run.output_root})")
