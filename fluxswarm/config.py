@@ -28,7 +28,7 @@ class SimConfig:
     # Drive each env's pulsatile inflow with its own episode clock and blank the
     # fluid rings only for envs that just reset. False reproduces the legacy
     # behaviour (batch-mean clock; all envs blanked when any env resets).
-    per_env_clock: bool = False
+    per_env_clock: bool = True
 
     @property
     def resolution(self) -> tuple[int, int]:

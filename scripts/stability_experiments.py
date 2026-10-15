@@ -45,6 +45,7 @@ def base_cfg(seed: int, steps: int, n_envs: int = 16) -> Config:
 
 
 def apply_variant(cfg: Config, variant: str) -> dict:
+    cfg.sim.per_env_clock = False  # experiments were run with the legacy clock unless "clock"
     """Mutate cfg; return extra env kwargs (dummy only). '+'-joined combos allowed."""
     env_kw: dict = {}
     for v in variant.split("+"):

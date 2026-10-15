@@ -869,5 +869,533 @@
    0.78,
    0.657
   ]
+ },
+ {
+  "run": "2026-10-16_00-03-37_physics_base_s2",
+  "updates": 150,
+  "episodes": 1982,
+  "window": {
+   "std_last50": 0.14151197554977524,
+   "mean_last50": 0.22170608108108109,
+   "final_mean_last10": 0.0546875
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.1925391095066185,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 7
+  },
+  "length_by_reason_last50": {
+   "failure": {
+    "mean_len": 222.72703751617075,
+    "count": 773
+   },
+   "success": {
+    "mean_len": 290.5229357798165,
+    "count": 218
+   }
+  },
+  "median_window_span_updates": 10.0,
+  "window_x4": {
+   "std_last50": 0.07734004288477918,
+   "mean_last50": 0.28745249155405406,
+   "final_mean_last10": 0.16953125
+  },
+  "ema": {
+   "std_last50": 0.10914495935958513,
+   "mean_last50": 0.24910972163258557,
+   "final_mean_last10": 0.09573919161498802
+  },
+  "update_rate": {
+   "std_last50": 0.38511771258896754,
+   "mean_last50": 0.24746597379817953,
+   "final_mean_last10": 0.15836466165413535
+  },
+  "window_len_weighted": {
+   "std_last50": 0.18008664317423512,
+   "mean_last50": 0.2804269447387326,
+   "final_mean_last10": 0.07703566330716338
+  },
+  "tail_epochs_run": 3.8,
+  "tail_minibatches": 48.86666666666667,
+  "tail_early_stop": 0.08,
+  "tail_approx_kl_max": 0.013744009130944809,
+  "tail_log_std": -2.003291130065918,
+  "tail_grad_norm": 5.858104209145725,
+  "tail_grad_norm_std": 3.629297709157926,
+  "tail_actor_grad_norm": 1.801622421978871,
+  "tail_actor_grad_norm_std": 0.6546880474526593,
+  "tail_explained_variance": 0.8921112863222758,
+  "tail_clipfrac": 0.06387241002270298,
+  "tail_value_loss_heads": [
+   17.196,
+   5.819,
+   2.587
+  ],
+  "tail_ev_heads": [
+   0.677,
+   0.748,
+   0.711
+  ]
+ },
+ {
+  "run": "2026-10-16_00-03-37_physics_clock+bonus50_s0",
+  "updates": 150,
+  "episodes": 465,
+  "window": {
+   "std_last50": 0.02762277094519476,
+   "mean_last50": 0.9747677364864865,
+   "final_mean_last10": 1.0
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.0043196544276458,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 2
+  },
+  "length_by_reason_last50": {
+   "success": {
+    "mean_len": 804.5021459227468,
+    "count": 233
+   }
+  },
+  "median_window_span_updates": 39.5,
+  "window_x4": {
+   "std_last50": 0.01812452286091813,
+   "mean_last50": 0.9259062564501942,
+   "final_mean_last10": 0.9490461104106677
+  },
+  "ema": {
+   "std_last50": 0.018118737882157867,
+   "mean_last50": 0.9854852091706778,
+   "final_mean_last10": 0.9998324531124593
+  },
+  "update_rate": {
+   "std_last50": 0.1210571368850076,
+   "mean_last50": 0.9823943661971831,
+   "final_mean_last10": 1.0
+  },
+  "window_len_weighted": {
+   "std_last50": 0.046019388403169034,
+   "mean_last50": 0.9552723348476007,
+   "final_mean_last10": 1.0
+  },
+  "tail_epochs_run": 3.92,
+  "tail_minibatches": 50.733333333333334,
+  "tail_early_stop": 0.02666666666666667,
+  "tail_approx_kl_max": 0.012607396443684896,
+  "tail_log_std": -2.0064492225646973,
+  "tail_grad_norm": 2.7315763055911435,
+  "tail_grad_norm_std": 1.640300310232209,
+  "tail_actor_grad_norm": 1.5280293287761908,
+  "tail_actor_grad_norm_std": 0.43674840416141675,
+  "tail_explained_variance": 0.9351920429865519,
+  "tail_clipfrac": 0.06884487680288463,
+  "tail_value_loss_heads": [
+   3.699,
+   2.609,
+   1.961
+  ],
+  "tail_ev_heads": [
+   0.882,
+   0.857,
+   0.747
+  ]
+ },
+ {
+  "run": "2026-10-16_00-03-37_physics_clock+bonus50_s1",
+  "updates": 150,
+  "episodes": 635,
+  "window": {
+   "std_last50": 0.0,
+   "mean_last50": 1.0,
+   "final_mean_last10": 1.0
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.0111464968152866,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 2
+  },
+  "length_by_reason_last50": {
+   "success": {
+    "mean_len": 626.5094339622641,
+    "count": 318
+   }
+  },
+  "median_window_span_updates": 28.0,
+  "window_x4": {
+   "std_last50": 0.030877690407191703,
+   "mean_last50": 0.9474883376141967,
+   "final_mean_last10": 0.9967447916666666
+  },
+  "ema": {
+   "std_last50": 0.0002828976964566582,
+   "mean_last50": 0.9998366011610578,
+   "final_mean_last10": 0.9999990267395709
+  },
+  "update_rate": {
+   "std_last50": 0.0,
+   "mean_last50": 1.0,
+   "final_mean_last10": 1.0
+  },
+  "window_len_weighted": {
+   "std_last50": 0.0,
+   "mean_last50": 1.0,
+   "final_mean_last10": 1.0
+  },
+  "tail_epochs_run": 3.92,
+  "tail_minibatches": 50.81333333333333,
+  "tail_early_stop": 0.02666666666666667,
+  "tail_approx_kl_max": 0.01159653102979064,
+  "tail_log_std": -2.011242628097534,
+  "tail_grad_norm": 2.774000515813841,
+  "tail_grad_norm_std": 1.8593555158946955,
+  "tail_actor_grad_norm": 1.472164147280402,
+  "tail_actor_grad_norm_std": 0.4472470128809958,
+  "tail_explained_variance": 0.9374162364006042,
+  "tail_clipfrac": 0.06307048917156338,
+  "tail_value_loss_heads": [
+   3.495,
+   2.791,
+   1.905
+  ],
+  "tail_ev_heads": [
+   0.908,
+   0.867,
+   0.796
+  ]
+ },
+ {
+  "run": "2026-10-16_00-03-37_physics_clock_s2",
+  "updates": 150,
+  "episodes": 461,
+  "window": {
+   "std_last50": 0.08154553623078745,
+   "mean_last50": 0.911875,
+   "final_mean_last10": 1.0
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.0290178571428572,
+   "frac_eps_in_bursts_ge_half_envs": 0.01735357917570499,
+   "max_ends_per_step": 8
+  },
+  "length_by_reason_last50": {
+   "success": {
+    "mean_len": 726.0698689956332,
+    "count": 229
+   },
+   "timeout": {
+    "mean_len": 2000.0,
+    "count": 2
+   }
+  },
+  "median_window_span_updates": 38.0,
+  "window_x4": {
+   "std_last50": 0.05794671145997042,
+   "mean_last50": 0.7899168760001236,
+   "final_mean_last10": 0.8629793910914979
+  },
+  "ema": {
+   "std_last50": 0.0806758208885445,
+   "mean_last50": 0.9368208721670349,
+   "final_mean_last10": 0.9989651753033287
+  },
+  "update_rate": {
+   "std_last50": 0.07924196049362221,
+   "mean_last50": 0.9786059351276741,
+   "final_mean_last10": 1.0
+  },
+  "window_len_weighted": {
+   "std_last50": 0.12143259078402505,
+   "mean_last50": 0.857008072302261,
+   "final_mean_last10": 1.0
+  },
+  "tail_epochs_run": 4.0,
+  "tail_minibatches": 52.0,
+  "tail_early_stop": 0.0,
+  "tail_approx_kl_max": 0.012228515309592089,
+  "tail_log_std": -2.0054574012756348,
+  "tail_grad_norm": 2.522423693659978,
+  "tail_grad_norm_std": 1.4520516102924241,
+  "tail_actor_grad_norm": 1.52682799596402,
+  "tail_actor_grad_norm_std": 0.3705126323452681,
+  "tail_explained_variance": 0.9501588257153829,
+  "tail_clipfrac": 0.06799748347355769,
+  "tail_value_loss_heads": [
+   3.98,
+   2.836,
+   1.793
+  ],
+  "tail_ev_heads": [
+   0.931,
+   0.765,
+   0.737
+  ]
+ },
+ {
+  "run": "2026-10-16_00-05-29_physics_sympcg_s0",
+  "updates": 150,
+  "episodes": 1461,
+  "window": {
+   "std_last50": 0.24710294776560163,
+   "mean_last50": 0.44372888513513514,
+   "final_mean_last10": 0.13489583333333333
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.1820388349514563,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 7
+  },
+  "length_by_reason_last50": {
+   "failure": {
+    "mean_len": 242.10745614035088,
+    "count": 456
+   },
+   "success": {
+    "mean_len": 464.84,
+    "count": 275
+   }
+  },
+  "median_window_span_updates": 12.0,
+  "window_x4": {
+   "std_last50": 0.07630047858543001,
+   "mean_last50": 0.39168074324324326,
+   "final_mean_last10": 0.41067708333333336
+  },
+  "ema": {
+   "std_last50": 0.1974556674417695,
+   "mean_last50": 0.4263357275361946,
+   "final_mean_last10": 0.1855047923073094
+  },
+  "update_rate": {
+   "std_last50": 0.46816952551155727,
+   "mean_last50": 0.4908022896628692,
+   "final_mean_last10": 0.25892408245349424
+  },
+  "window_len_weighted": {
+   "std_last50": 0.3009519508131398,
+   "mean_last50": 0.5429007996719385,
+   "final_mean_last10": 0.16365528940719593
+  },
+  "tail_epochs_run": 3.72,
+  "tail_minibatches": 47.666666666666664,
+  "tail_early_stop": 0.09333333333333334,
+  "tail_approx_kl_max": 0.013626414357374111,
+  "tail_log_std": -2.007462978363037,
+  "tail_grad_norm": 6.4919718674226266,
+  "tail_grad_norm_std": 4.3627651352134205,
+  "tail_actor_grad_norm": 0.747682120045502,
+  "tail_actor_grad_norm_std": 0.2427958350514409,
+  "tail_explained_variance": 0.8946688969930013,
+  "tail_clipfrac": 0.059431961376297304,
+  "tail_value_loss_heads": [
+   20.607,
+   8.056,
+   2.629
+  ],
+  "tail_ev_heads": [
+   0.712,
+   0.757,
+   0.695
+  ]
+ },
+ {
+  "run": "2026-10-16_00-05-48_physics_sympcg_s1",
+  "updates": 150,
+  "episodes": 1880,
+  "window": {
+   "std_last50": 0.1722476080973318,
+   "mean_last50": 0.31798986486486486,
+   "final_mean_last10": 0.35104166666666664
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.1997447351627313,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 7
+  },
+  "length_by_reason_last50": {
+   "failure": {
+    "mean_len": 215.17891373801916,
+    "count": 626
+   },
+   "success": {
+    "mean_len": 297.93949044585986,
+    "count": 314
+   }
+  },
+  "median_window_span_updates": 10.0,
+  "window_x4": {
+   "std_last50": 0.0851349086422978,
+   "mean_last50": 0.3648120777027027,
+   "final_mean_last10": 0.40143229166666666
+  },
+  "ema": {
+   "std_last50": 0.11001138955296373,
+   "mean_last50": 0.31925698760299714,
+   "final_mean_last10": 0.3632496210006548
+  },
+  "update_rate": {
+   "std_last50": 0.42869895806412234,
+   "mean_last50": 0.365217015491558,
+   "final_mean_last10": 0.4727838045145738
+  },
+  "window_len_weighted": {
+   "std_last50": 0.20613165478036738,
+   "mean_last50": 0.38010432971392216,
+   "final_mean_last10": 0.5080104500280466
+  },
+  "tail_epochs_run": 3.466666666666667,
+  "tail_minibatches": 43.586666666666666,
+  "tail_early_stop": 0.18666666666666668,
+  "tail_approx_kl_max": 0.015154274540642897,
+  "tail_log_std": -2.00361967086792,
+  "tail_grad_norm": 7.3872687699067,
+  "tail_grad_norm_std": 4.292522756768203,
+  "tail_actor_grad_norm": 0.899435761697553,
+  "tail_actor_grad_norm_std": 0.31309749903112577,
+  "tail_explained_variance": 0.8803405030568441,
+  "tail_clipfrac": 0.06950380430116757,
+  "tail_value_loss_heads": [
+   23.463,
+   9.047,
+   2.987
+  ],
+  "tail_ev_heads": [
+   0.7,
+   0.753,
+   0.701
+  ]
+ },
+ {
+  "run": "2026-10-16_00-05-56_physics_nopcg_s0",
+  "updates": 150,
+  "episodes": 1965,
+  "window": {
+   "std_last50": 0.1296465380424363,
+   "mean_last50": 0.3591666666666667,
+   "final_mean_last10": 0.21770833333333334
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.2197392923649908,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 6
+  },
+  "length_by_reason_last50": {
+   "failure": {
+    "mean_len": 217.00772797527048,
+    "count": 647
+   },
+   "success": {
+    "mean_len": 273.51190476190476,
+    "count": 336
+   }
+  },
+  "median_window_span_updates": 10.0,
+  "window_x4": {
+   "std_last50": 0.041268064095003366,
+   "mean_last50": 0.38903645833333333,
+   "final_mean_last10": 0.32083333333333336
+  },
+  "ema": {
+   "std_last50": 0.09138303604918539,
+   "mean_last50": 0.3673152451391522,
+   "final_mean_last10": 0.2473721481752604
+  },
+  "update_rate": {
+   "std_last50": 0.4380353761630627,
+   "mean_last50": 0.38453406689971537,
+   "final_mean_last10": 0.26705313704429134
+  },
+  "window_len_weighted": {
+   "std_last50": 0.14785172305463012,
+   "mean_last50": 0.40660511869710486,
+   "final_mean_last10": 0.24793023539613182
+  },
+  "tail_epochs_run": 3.88,
+  "tail_minibatches": 49.88,
+  "tail_early_stop": 0.08,
+  "tail_approx_kl_max": 0.014176044935981432,
+  "tail_log_std": -2.005312919616699,
+  "tail_grad_norm": 6.5731610118129025,
+  "tail_grad_norm_std": 4.241808955081197,
+  "tail_actor_grad_norm": 2.3530697455189475,
+  "tail_actor_grad_norm_std": 0.5877501238856659,
+  "tail_explained_variance": 0.889601981639862,
+  "tail_clipfrac": 0.0717201410034422,
+  "tail_value_loss_heads": [
+   18.922,
+   6.983,
+   2.471
+  ],
+  "tail_ev_heads": [
+   0.668,
+   0.786,
+   0.739
+  ]
+ },
+ {
+  "run": "2026-10-16_00-05-59_physics_nopcg_s1",
+  "updates": 150,
+  "episodes": 1463,
+  "window": {
+   "std_last50": 0.1648423594596432,
+   "mean_last50": 0.33135416666666667,
+   "final_mean_last10": 0.19583333333333333
+  },
+  "burst": {
+   "mean_ends_per_ending_step": 1.1713370696557246,
+   "frac_eps_in_bursts_ge_half_envs": 0.0,
+   "max_ends_per_step": 6
+  },
+  "length_by_reason_last50": {
+   "failure": {
+    "mean_len": 233.1,
+    "count": 520
+   },
+   "success": {
+    "mean_len": 491.5518867924528,
+    "count": 212
+   }
+  },
+  "median_window_span_updates": 13.0,
+  "window_x4": {
+   "std_last50": 0.1334700938432308,
+   "mean_last50": 0.465859375,
+   "final_mean_last10": 0.3125
+  },
+  "ema": {
+   "std_last50": 0.13123903911624726,
+   "mean_last50": 0.36685090104001594,
+   "final_mean_last10": 0.24502685052690445
+  },
+  "update_rate": {
+   "std_last50": 0.453506945781367,
+   "mean_last50": 0.4326051040813849,
+   "final_mean_last10": 0.2897727272727273
+  },
+  "window_len_weighted": {
+   "std_last50": 0.1811288431786175,
+   "mean_last50": 0.48523856127268544,
+   "final_mean_last10": 0.3732973901602011
+  },
+  "tail_epochs_run": 4.0,
+  "tail_minibatches": 51.85333333333333,
+  "tail_early_stop": 0.02666666666666667,
+  "tail_approx_kl_max": 0.012670654046038787,
+  "tail_log_std": -2.0087625980377197,
+  "tail_grad_norm": 5.426429470057336,
+  "tail_grad_norm_std": 3.9004881968521787,
+  "tail_actor_grad_norm": 2.2573108258740597,
+  "tail_actor_grad_norm_std": 0.5742320185415885,
+  "tail_explained_variance": 0.8968931929270426,
+  "tail_clipfrac": 0.06561664669568872,
+  "tail_value_loss_heads": [
+   11.088,
+   7.095,
+   2.386
+  ],
+  "tail_ev_heads": [
+   0.663,
+   0.726,
+   0.667
+  ]
  }
 ]

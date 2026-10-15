@@ -181,3 +181,10 @@ def test_per_env_clock_blanks_only_fresh_envs():
     env.solver.step(torch.zeros(2, env.n, 2, dtype=torch.float64))
     # the pre-step ring sample of env 0 is still a real fluid sample (non-zero drag input)
     assert float(env.solver.last_drag[0].abs().sum()) > 0
+
+
+def test_per_env_clock_default_on_and_cli_off():
+    from fluxswarm.config import Config, parse_config
+
+    assert Config().sim.per_env_clock is True
+    assert parse_config(["--no-per-env-clock"]).sim.per_env_clock is False
