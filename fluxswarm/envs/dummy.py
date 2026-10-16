@@ -62,6 +62,10 @@ class DummyUpstreamEnv:
         speed: float = 1.5,
         dt: float = 1.0,
         max_steps: int = 80,
+        reward_mode: str = "binary",
+        terminal_bonus: float = 0.0,
+        drift_profile: str = "uniform",
+        drift_jitter: float = 0.0,
     ):
         self.cfg = cfg
         self.batch = batch or cfg.train.batch_envs
@@ -72,6 +76,17 @@ class DummyUpstreamEnv:
         self.speed = float(speed)
         self.dt = float(dt)
         self.max_steps = int(max_steps)
+        # "binary": +1 moving upstream else -0.1 (original). "legacy": mimics the
+        # unclamped physics legacy reward (300*dx/L upstream, 100*dx/L otherwise).
+        self.reward_mode = reward_mode
+        self.terminal_bonus = float(terminal_bonus)
+        # "poiseuille": drift = drift * 4 y'(1-y'), so the channel centre can be
+        # faster than the swimmer and members must find the slow near-wall flow
+        # (a cheap stand-in for the physics wall-seeking problem).
+        self.drift_profile = drift_profile
+        self.drift_jitter = float(drift_jitter)
+        self._gen = torch.Generator(device="cpu")
+        self._drift_scale = torch.ones(self.batch, 1, device=self.device)
         self.success_x = float(cfg.task.success_x)
         self.failure_x = float(cfg.task.failure_x)
         self.start_x = 0.5 * (self.success_x + self.failure_x)
@@ -97,6 +112,8 @@ class DummyUpstreamEnv:
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
+            self._gen.manual_seed(int(seed))
+        self._resample_drift(torch.arange(self.batch, device=self.device))
         self.solver.swarm.reset_all()
         self.solver.episode_time.zero_()
         self.episode_steps.zero_()
@@ -108,10 +125,24 @@ class DummyUpstreamEnv:
         if ids.numel() == 0:
             return
         self.solver.swarm.reset_ids(ids)
+        self._resample_drift(ids)
         self.solver.episode_time[ids] = 0
         self.episode_steps[ids] = 0
         self.cum_objectives[ids] = 0
         self.episode_id[ids] += 1
+
+    def _resample_drift(self, ids: torch.Tensor) -> None:
+        if self.drift_jitter <= 0:
+            return
+        u = torch.rand(int(ids.numel()), 1, generator=self._gen) * 2.0 - 1.0
+        self._drift_scale[ids] = (1.0 + self.drift_jitter * u).to(self.device)
+
+    def _drift(self, y: torch.Tensor) -> torch.Tensor:
+        d = torch.full_like(y, self.drift)
+        if self.drift_profile == "poiseuille":
+            yp = (y / self.length_y).clamp(0.0, 1.0)
+            d = d * 4.0 * yp * (1.0 - yp)
+        return d * self._drift_scale
 
     def get_positions(self) -> np.ndarray:
         return self.solver.swarm.pos.detach().cpu().numpy()
@@ -135,7 +166,7 @@ class DummyUpstreamEnv:
         s.prev_action = s.action.clone()
         s.action = actions
         vel = torch.zeros_like(s.pos)
-        vel[..., 0] = actions[..., 0] * self.speed + self.drift
+        vel[..., 0] = actions[..., 0] * self.speed + self._drift(prev_pos[..., 1])
         vel[..., 1] = actions[..., 1] * self.speed
         s.vel = vel
         s.pos = s.pos + vel * self.dt
@@ -144,7 +175,11 @@ class DummyUpstreamEnv:
         xs = s.pos[..., 0]
         dx = prev_pos[..., 0] - xs
         moving_left = dx > 0
-        progress = torch.where(moving_left, torch.ones_like(dx), torch.full_like(dx, -0.1))
+        if self.reward_mode == "legacy":
+            L = max(self.failure_x - self.success_x, 1e-6)
+            progress = torch.where(moving_left, dx / L * 300.0, dx / L * 100.0)
+        else:
+            progress = torch.where(moving_left, torch.ones_like(dx), torch.full_like(dx, -0.1))
         mag = torch.linalg.norm(actions, dim=-1).clamp(0.0, 1.0)
         energy = 1.0 - mag
         delta = actions - s.prev_action
@@ -164,6 +199,10 @@ class DummyUpstreamEnv:
         terminations = success | any_fail
         truncations = (self.episode_steps >= self.max_steps) & ~terminations
         done = terminations | truncations
+        if self.terminal_bonus != 0.0:
+            reward_matrix[success, :, 0] += self.w[0] * self.terminal_bonus
+            reward_matrix[any_fail & ~success, :, 0] -= self.w[0] * self.terminal_bonus
+            scalar = reward_matrix.sum(dim=-1).mean(dim=-1)
 
         infos: list[dict[str, Any]] = []
         for b in range(self.batch):

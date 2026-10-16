@@ -82,13 +82,17 @@ class BatchedSwarmEnv:
 
         terminations, truncations, reasons = self._done_flags()
         # Terminal progress bonuses for potential mode
-        if self.cfg.task.progress_reward == "potential":
+        tb = float(self.cfg.task.terminal_bonus)
+        if tb != 0.0 and (
+            self.cfg.task.progress_reward == "potential"
+            or (self.cfg.task.progress_reward == "legacy" and self.cfg.task.terminal_bonus_legacy)
+        ):
             success = torch.tensor([r == "success" for r in reasons], device=reward_matrix.device)
             failure = torch.tensor([r == "failure" for r in reasons], device=reward_matrix.device)
             if success.any():
-                reward_matrix[success, :, 0] += self.cfg.task.w_progress * 10.0
+                reward_matrix[success, :, 0] += self.cfg.task.w_progress * tb
             if failure.any():
-                reward_matrix[failure, :, 0] -= self.cfg.task.w_progress * 10.0
+                reward_matrix[failure, :, 0] -= self.cfg.task.w_progress * tb
             scalar = reward_matrix.sum(dim=-1).mean(dim=-1)
 
         done = terminations | truncations

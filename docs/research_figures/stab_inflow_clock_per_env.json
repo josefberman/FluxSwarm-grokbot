@@ -1,0 +1,9 @@
+{
+ "steps": 1200,
+ "inflow_velocity": 400.0,
+ "mean_abs_err_vs_own_clock": 17.639044691041356,
+ "p95_abs_err": 93.02841770382499,
+ "max_abs_err": 390.2496123611629,
+ "cross_env_corr_u": 0.7676750005165225,
+ "cross_env_corr_own_clock": 0.8017853481863092
+}

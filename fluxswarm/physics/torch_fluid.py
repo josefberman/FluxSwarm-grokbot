@@ -157,6 +157,9 @@ class TorchFluidSolver:
                 self.v[ids] = 0
             return
         scale = beat_waveform(t + dt_sub, amp, period) - beat_waveform(t, amp, period)
+        if isinstance(scale, torch.Tensor) and scale.dim() > 0:
+            # per-env clock: (B,) -> (B, 1, 1)
+            scale = scale.to(self.u.dtype).view(-1, 1, 1)
         delta = scale * self.parabolic[None, None, :]
         if chi_u is not None:
             delta = delta * (1.0 - chi_u)
@@ -312,7 +315,7 @@ class TorchFluidSolver:
 
     def substep_loop(
         self,
-        t0: float,
+        t0: "float | torch.Tensor",
         dt: float,
         n_sub: int,
         pos: torch.Tensor,
