@@ -85,6 +85,10 @@ class TaskConfig:
     # in potential mode; legacy mode only when terminal_bonus_legacy is True.
     terminal_bonus: float = 10.0
     terminal_bonus_legacy: bool = False
+    # Subtracted from the progress objective every step. Total cost scales with
+    # episode length, so a timeout pays more than an early success. 0 leaves the
+    # legacy 300/100 upstream/downstream asymmetry unchanged.
+    step_cost: float = 0.0
 
 
 @dataclass
@@ -251,6 +255,7 @@ def _apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         "lr_final_fraction": ("train", "lr_final_fraction"),
         "success_ema_beta": ("train", "success_ema_beta"),
         "terminal_bonus": ("task", "terminal_bonus"),
+        "step_cost": ("task", "step_cost"),
         "output_root": ("run", "output_root"),
         "tag": ("run", "tag"),
         "wall_policy_mode": ("run", "wall_policy_mode"),
@@ -338,6 +343,15 @@ def build_argparser(description: str | None = None) -> argparse.ArgumentParser:
     g.add_argument("--w-smooth", type=float, default=None, help=f"smoothness reward weight ({d.task.w_smooth})")
 
     g.add_argument("--terminal-bonus", type=float, default=None, help=f"terminal +/- progress bonus ({d.task.terminal_bonus})")
+    g.add_argument(
+        "--step-cost",
+        type=float,
+        default=None,
+        help=(
+            f"per-step cost on the progress objective ({d.task.step_cost}); "
+            "a 10s episode at dt=0.005 is 2000 steps, so 0.1 costs 200 on a timeout"
+        ),
+    )
     g.add_argument(
         "--terminal-bonus-legacy",
         dest="terminal_bonus_legacy",

@@ -23,6 +23,8 @@ def compute_rewards(
     B, N, _ = solver.swarm.pos.shape
     device = solver.swarm.pos.device
     progress = _progress(solver, task, prev_pos)
+    if task.step_cost != 0.0:
+        progress = progress - float(task.step_cost)
     energy = _energy(solver)
     smooth = _smoothness(solver)
 

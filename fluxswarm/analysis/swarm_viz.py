@@ -239,6 +239,32 @@ def _write_mp4(frames: list[np.ndarray], out: Path, fps: int) -> Optional[Path]:
         return None
 
 
+def _read_env0_steps(run_dir: Path):
+    """Env-0 positions only. The full step log is too wide to load for a video."""
+    import pyarrow as pa
+    import pyarrow.dataset as ds
+
+    path = Path(run_dir) / "steps.parquet"
+    if not path.exists():
+        return None
+    dataset = ds.dataset(str(path), format="parquet")
+    names = list(dataset.schema.names)
+    xs = sorted(c for c in names if c.startswith("location_") and c.endswith("_x"))
+    ys = sorted(c for c in names if c.startswith("location_") and c.endswith("_y"))
+    if not xs or len(xs) != len(ys):
+        return None
+    cols = [c for c in ("env", "global_step", "episode_time") if c in names] + xs + ys
+    filt = ds.field("env") == 0 if "env" in names else None
+    prev = pa.cpu_count()
+    pa.set_cpu_count(1)
+    try:
+        table = dataset.to_table(columns=cols, filter=filt)
+    finally:
+        pa.set_cpu_count(prev)
+    frame = table.to_pandas()
+    return frame if len(frame) else None
+
+
 def animate_swarm_from_run(
     run_dir: Path,
     out: Optional[Path] = None,
@@ -260,10 +286,9 @@ def animate_swarm_from_run(
 
     run_dir = Path(run_dir)
     if steps is None:
-        steps_path = run_dir / "steps.parquet"
-        if not steps_path.exists():
+        steps = _read_env0_steps(run_dir)
+        if steps is None:
             return None
-        steps = pd.read_parquet(steps_path)
     if steps is None or len(steps) == 0:
         return None
     if "env" in steps.columns:
@@ -292,6 +317,8 @@ def animate_swarm_from_run(
     n = len(steps)
     every = max(1, int(frame_every))
     idx = np.arange(0, n, every)
+    if idx.size > 2000:
+        idx = np.linspace(0, n - 1, 2000).astype(int)
 
     out = out or (run_dir / "figures" / "swarm_motion.mp4")
     out = Path(out).with_suffix(".mp4")

@@ -79,6 +79,24 @@ def test_lr_schedules():
     assert abs(lr_at(9, 10, 1e-3, "cosine", 0.1) - 1e-4) < 1e-12
 
 
+def test_step_cost_scales_with_episode_length():
+    from fluxswarm.config import Config
+    from fluxswarm.envs.dummy import DummyUpstreamEnv
+
+    cfg = Config()
+    cfg.task.step_cost = 0.2
+    env = DummyUpstreamEnv(
+        cfg, batch=1, n_agents=1, drift=0.0, speed=1.0, max_steps=5, reward_mode="legacy"
+    )
+    env.reset()
+    action = np.zeros((1, 1, 2), dtype=np.float32)
+    info = {}
+    for _ in range(5):
+        _, _, _, _, info = env.step(action)
+    # Held still: legacy displacement term is 0, so cum_progress is -step_cost * steps.
+    assert abs(info["infos"][0]["episode"]["cum_progress"] - (-1.0)) < 1e-5
+
+
 def test_dummy_terminal_bonus_applied_on_success():
     from fluxswarm.config import Config
     from fluxswarm.envs.dummy import DummyUpstreamEnv

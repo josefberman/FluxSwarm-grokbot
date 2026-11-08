@@ -93,12 +93,45 @@ def _read_steps_file(run_dir: Path) -> Optional[pd.DataFrame]:
     return pd.read_parquet(pq) if pq.exists() else None
 
 
+_EPISODE_COLUMNS = (
+    "episode",
+    "env",
+    "steps",
+    "reason",
+    "status",
+    "cum_progress",
+    "cum_energy_efficiency",
+    "cum_smoothness",
+    "global_step",
+)
+
+# Figure extraction never materializes the step log. A long run is tens of
+# millions of wide rows; loading it (once per plot) is what gets the process killed.
+_MAX_STEP_SAMPLE = 80_000
+_MAX_LINE_POINTS = 2_000
+_MAX_SCATTER = 20_000
+_summary_cache: dict[tuple[str, ...], Optional["_StepSummary"]] = {}
+
+
+def _read_parquet_frame(path: Path, columns: Sequence[str] | None = None) -> pd.DataFrame:
+    import pyarrow.dataset as ds
+
+    dataset = ds.dataset(str(path), format="parquet")
+    cols = None
+    if columns is not None:
+        have = set(dataset.schema.names)
+        cols = [c for c in columns if c in have] or None
+    return dataset.to_table(columns=cols).to_pandas()
+
+
 def _read_episodes_file(run_dir: Path) -> Optional[pd.DataFrame]:
     pq = run_dir / "episodes.parquet"
     if pq.exists():
-        return pd.read_parquet(pq)
+        return _read_parquet_frame(pq, _EPISODE_COLUMNS)
     csv = run_dir / "episodes.csv"
-    return pd.read_csv(csv) if csv.exists() else None
+    if not csv.exists():
+        return None
+    return pd.read_csv(csv, usecols=lambda c: c in _EPISODE_COLUMNS)
 
 
 def _stitch_logs(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -136,6 +169,246 @@ def _load_episodes(run_dir: Path) -> Optional[pd.DataFrame]:
     if not frames:
         return None
     return frames[0] if len(frames) == 1 else _stitch_logs(frames)
+
+
+class _StepSummary:
+    """Bounded stand-in for the step log: one row per episode, plus a stride sample."""
+
+    def __init__(self, n_rows: int, sample: pd.DataFrame, episodes: pd.DataFrame):
+        self.n_rows = int(n_rows)
+        self.sample = sample
+        self.episodes = episodes
+
+
+def _thin_line(
+    x,
+    y,
+    band=None,
+    max_points: int = _MAX_LINE_POINTS,
+    how: str = "mean",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Reduce a line to ``max_points`` so matplotlib is not handed millions of vertices."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    b = None if band is None else np.asarray(band, dtype=float)
+    n = int(x.size)
+    if n <= max_points or max_points < 2:
+        return x, y, b
+    if how == "stride":
+        k = int(np.ceil(n / max_points))
+        sl = slice(None, None, k)
+        return x[sl], y[sl], None if b is None else b[sl]
+    edges = np.linspace(0, n, max_points + 1).astype(int)
+    xs, ys, bs = [], [], []
+    for a, c in zip(edges[:-1], edges[1:]):
+        if c <= a:
+            continue
+        xs.append(float(np.nanmean(x[a:c])))
+        ys.append(float(np.nanmean(y[a:c])))
+        if b is not None:
+            bs.append(float(np.nanmean(b[a:c])))
+    return np.asarray(xs), np.asarray(ys), (np.asarray(bs) if b is not None else None)
+
+
+def _plot_band(ax, x, y, band, color, **plot_kw) -> None:
+    x, y, band = _thin_line(x, y, band)
+    ax.plot(x, y, color=color, **plot_kw)
+    if band is not None:
+        ax.fill_between(x, y - band, y + band, color=color, alpha=0.2)
+
+
+def _step_sources(run_dir: Path) -> list[Path]:
+    return [p / "steps.parquet" for p in resume_chain(run_dir) if (p / "steps.parquet").exists()]
+
+
+def _step_summary(run_dir: Path) -> Optional[_StepSummary]:
+    sources = _step_sources(run_dir)
+    key = tuple(str(p.resolve()) for p in sources)
+    if key in _summary_cache:
+        return _summary_cache[key]
+    summary = _scan_steps(sources) if sources else None
+    _summary_cache[key] = summary
+    return summary
+
+
+def _scan_steps(sources: list[Path]) -> Optional[_StepSummary]:
+    """One single-threaded pass. Keeps per-episode aggregates and a stride sample."""
+    import pyarrow as pa
+    import pyarrow.dataset as ds
+
+    plans: list[tuple[int, object, list[str]]] = []
+    total = 0
+    for source_i, path in enumerate(sources):
+        dataset = ds.dataset(str(path), format="parquet")
+        names = list(dataset.schema.names)
+        fragments = sorted(dataset.get_fragments(), key=lambda f: f.path)
+        for frag in fragments:
+            total += int(frag.count_rows())
+            plans.append((source_i, frag, names))
+    if total <= 0:
+        return None
+
+    stride = max(1, total // _MAX_STEP_SAMPLE)
+    if total > 500_000:
+        print(
+            f"Scanning {total} step rows for figures (one pass, stride {stride})",
+            flush=True,
+        )
+
+    held: dict[str, list[np.ndarray]] = {k: [] for k in (
+        "row", "episode_time", "com_x", "sig_x", "sig_y", "vx", "vy",
+    )}
+    epi: dict[str, list] = {k: [] for k in (
+        "episode", "env", "length", "dx", "t_last", "progress_sum", "energy_sum", "smooth_sum",
+    )}
+    states: dict[int, dict] = {}
+    row_base = 0
+    ep_offset = 0
+    wanted = ("episode", "env", "episode_time", "progress", "energy_efficiency", "smoothness")
+    prev_threads = pa.cpu_count()
+    pa.set_cpu_count(1)
+    try:
+        current_source = -1
+        max_ep = -1
+        for source_i, frag, names in plans:
+            if source_i != current_source:
+                if current_source >= 0:
+                    _flush_open_episodes(states, epi, ep_offset)
+                    if max_ep >= 0:
+                        ep_offset += max_ep + 1
+                current_source = source_i
+                max_ep = -1
+            name_set = set(names)
+            xcols = sorted(c for c in names if c.startswith("location_") and c.endswith("_x"))
+            ycols = sorted(c for c in names if c.startswith("location_") and c.endswith("_y"))
+            vxcols = sorted(c for c in names if c.startswith("velocity_") and c.endswith("_x"))
+            vycols = sorted(c for c in names if c.startswith("velocity_") and c.endswith("_y"))
+            cols = [c for c in wanted if c in name_set] + xcols + ycols + vxcols + vycols
+            for batch in frag.to_batches(columns=cols or None, batch_size=65_536):
+                pdf = batch.to_pandas()
+                n = len(pdf)
+                if n == 0:
+                    continue
+                ep = pdf["episode"].to_numpy() if "episode" in pdf.columns else np.zeros(n)
+                env = pdf["env"].to_numpy() if "env" in pdf.columns else np.zeros(n, dtype=np.int64)
+                t = (
+                    pdf["episode_time"].to_numpy(dtype=float)
+                    if "episode_time" in pdf.columns
+                    else np.zeros(n)
+                )
+                prog = pdf["progress"].to_numpy(dtype=float) if "progress" in pdf.columns else np.zeros(n)
+                energy = (
+                    pdf["energy_efficiency"].to_numpy(dtype=float)
+                    if "energy_efficiency" in pdf.columns
+                    else np.zeros(n)
+                )
+                smooth = (
+                    pdf["smoothness"].to_numpy(dtype=float)
+                    if "smoothness" in pdf.columns
+                    else np.zeros(n)
+                )
+                com = pdf[xcols].to_numpy(dtype=float).mean(axis=1) if xcols else np.full(n, np.nan)
+                sig_x = pdf[xcols].to_numpy(dtype=float).std(axis=1, ddof=1) if len(xcols) > 1 else np.full(n, np.nan)
+                sig_y = pdf[ycols].to_numpy(dtype=float).std(axis=1, ddof=1) if len(ycols) > 1 else np.full(n, np.nan)
+                vx = pdf[vxcols].to_numpy(dtype=float).mean(axis=1) if vxcols else np.full(n, np.nan)
+                vy = pdf[vycols].to_numpy(dtype=float).mean(axis=1) if vycols else np.full(n, np.nan)
+                idx = np.arange(row_base, row_base + n)
+                keep = (idx % stride) == 0
+                if keep.any():
+                    held["row"].append(idx[keep])
+                    held["episode_time"].append(t[keep])
+                    held["com_x"].append(com[keep])
+                    held["sig_x"].append(sig_x[keep])
+                    held["sig_y"].append(sig_y[keep])
+                    held["vx"].append(vx[keep])
+                    held["vy"].append(vy[keep])
+                finite_ep = ep[np.isfinite(ep.astype(float))] if ep.dtype.kind == "f" else ep
+                if len(finite_ep):
+                    max_ep = max(max_ep, int(np.max(finite_ep)))
+                _consume_episodes(states, epi, ep_offset, env, ep, com, t, prog, energy, smooth)
+                row_base += n
+        _flush_open_episodes(states, epi, ep_offset)
+    finally:
+        pa.set_cpu_count(prev_threads)
+
+    sample = (
+        pd.DataFrame({k: np.concatenate(v) for k, v in held.items()})
+        if held["row"]
+        else pd.DataFrame(columns=list(held))
+    )
+    episodes = pd.DataFrame(epi) if epi["episode"] else pd.DataFrame(columns=list(epi))
+    return _StepSummary(total, sample, episodes)
+
+
+def _flush_open_episodes(states: dict[int, dict], epi: dict[str, list], offset: int) -> None:
+    for env, st in states.items():
+        epi["episode"].append(int(st["episode"]) + offset)
+        epi["env"].append(int(env))
+        epi["length"].append(int(st["n"]))
+        epi["dx"].append(float(st["last"] - st["first"]))
+        epi["t_last"].append(float(st["t"]))
+        epi["progress_sum"].append(float(st["p"]))
+        epi["energy_sum"].append(float(st["e"]))
+        epi["smooth_sum"].append(float(st["s"]))
+    states.clear()
+
+
+def _consume_episodes(
+    states: dict[int, dict],
+    epi: dict[str, list],
+    offset: int,
+    env: np.ndarray,
+    ep: np.ndarray,
+    com: np.ndarray,
+    t: np.ndarray,
+    prog: np.ndarray,
+    energy: np.ndarray,
+    smooth: np.ndarray,
+) -> None:
+    for e in np.unique(env):
+        mask = env == e
+        ep_e = ep[mask]
+        if ep_e.size == 0:
+            continue
+        com_e, t_e = com[mask], t[mask]
+        p_e, en_e, sm_e = prog[mask], energy[mask], smooth[mask]
+        cuts = np.flatnonzero(ep_e[1:] != ep_e[:-1]) + 1
+        starts = np.concatenate(([0], cuts))
+        ends = np.concatenate((cuts, [ep_e.size]))
+        st = states.get(int(e))
+        key = int(e)
+        for a, b in zip(starts, ends):
+            eid = ep_e[a]
+            eid_i = int(eid) if np.isfinite(float(eid)) else -1
+            if st is None or st["episode"] != eid_i:
+                if st is not None:
+                    epi["episode"].append(int(st["episode"]) + offset)
+                    epi["env"].append(key)
+                    epi["length"].append(int(st["n"]))
+                    epi["dx"].append(float(st["last"] - st["first"]))
+                    epi["t_last"].append(float(st["t"]))
+                    epi["progress_sum"].append(float(st["p"]))
+                    epi["energy_sum"].append(float(st["e"]))
+                    epi["smooth_sum"].append(float(st["s"]))
+                st = {
+                    "episode": eid_i,
+                    "first": float(com_e[a]),
+                    "last": float(com_e[b - 1]),
+                    "n": int(b - a),
+                    "t": float(t_e[b - 1]),
+                    "p": float(p_e[a:b].sum()),
+                    "e": float(en_e[a:b].sum()),
+                    "s": float(sm_e[a:b].sum()),
+                }
+            else:
+                st["last"] = float(com_e[b - 1])
+                st["n"] += int(b - a)
+                st["t"] = float(t_e[b - 1])
+                st["p"] += float(p_e[a:b].sum())
+                st["e"] += float(en_e[a:b].sum())
+                st["s"] += float(sm_e[a:b].sum())
+        if st is not None:
+            states[key] = st
 
 
 def _load_config(run_dir: Path) -> dict:
@@ -202,61 +475,55 @@ def comparison_dir(output_root: Path, slug_parts: Sequence[str]) -> Path:
     return d
 
 
+def _env_episode_order(eps: pd.DataFrame) -> pd.DataFrame:
+    """One row per finished env-episode, ordered so every env is on the x-axis."""
+    cols = [c for c in ("episode", "env") if c in eps.columns]
+    if not cols:
+        return eps
+    return eps.sort_values(cols, kind="mergesort")
+
+
 def plot_reward_per_episode(run_dir: Path, out: Optional[Path] = None) -> Path:
     run_dir = Path(run_dir)
     out = out or (run_dir / "figures" / "reward_per_episode.png")
     out.parent.mkdir(parents=True, exist_ok=True)
-    steps = _load_steps(run_dir)
     eps = _load_episodes(run_dir)
+    if eps is None or "cum_progress" not in eps.columns:
+        summary = _step_summary(run_dir)
+        if summary is not None and len(summary.episodes):
+            ep = summary.episodes
+            eps = pd.DataFrame({
+                "episode": ep["episode"].to_numpy(),
+                "env": ep["env"].to_numpy(),
+                "steps": ep["length"].to_numpy(),
+                "cum_progress": ep["progress_sum"].to_numpy(),
+                "cum_energy_efficiency": ep["energy_sum"].to_numpy(),
+                "cum_smoothness": ep["smooth_sum"].to_numpy(),
+            })
     fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
     metrics = ["progress", "energy_efficiency", "smoothness"]
     colors = ["#2F67B1", "#2E8B57", "#E07A2F"]
-    if steps is not None and "episode" in steps.columns:
-        for ax, m, c in zip(axes, metrics, colors):
-            if m not in steps.columns:
-                continue
-            how = "sum" if m == "progress" else "mean"
-            keys = ["episode", "env"] if "env" in steps.columns else ["episode"]
-            ep = steps.groupby(keys, sort=True)[m].agg(how)
-            if "env" in steps.columns and steps["env"].nunique() > 1:
-                per = ep.groupby("episode")
-                roll, std = per.mean(), per.std().fillna(0)
-            else:
-                if isinstance(ep.index, pd.MultiIndex):
-                    ep = ep.droplevel("env")
-                roll = ep.rolling(5, center=True, min_periods=1).mean()
-                std = ep.rolling(5, min_periods=1).std().fillna(0)
-            ax.plot(roll.index, roll.values, color=c, label=m)
-            ax.fill_between(roll.index, roll - std, roll + std, color=c, alpha=0.2)
-            ax.set_ylabel(m)
-            ax.grid(True, alpha=0.3)
-    elif eps is not None:
+    if eps is not None:
+        work = _env_episode_order(eps)
+        x_all = np.arange(len(work), dtype=float)
         for ax, m, c in zip(axes, metrics, colors):
             cum = f"cum_{m}"
             if m == "progress":
-                col = cum if cum in eps.columns else m
-                series = eps[col] if col in eps.columns else None
-            elif cum in eps.columns and "steps" in eps.columns:
-                series = eps[cum] / eps["steps"].clip(lower=1)
+                col = cum if cum in work.columns else m
+                series = work[col] if col in work.columns else None
+            elif cum in work.columns and "steps" in work.columns:
+                series = work[cum] / work["steps"].clip(lower=1)
                 col = m
             else:
-                col = cum if cum in eps.columns else m
-                series = eps[col] if col in eps.columns else None
+                col = cum if cum in work.columns else m
+                series = work[col] if col in work.columns else None
             if series is None:
                 continue
-            if "env" in eps.columns and "episode" in eps.columns and eps["env"].nunique() > 1:
-                tmp = eps.assign(_v=series)
-                per = tmp.groupby("episode")["_v"]
-                roll, std = per.mean(), per.std().fillna(0)
-                x = roll.index
-            else:
-                x = eps["episode"] if "episode" in eps.columns else eps.index
-                roll = series.rolling(5, center=True, min_periods=1).mean()
-                std = series.rolling(5, min_periods=1).std().fillna(0)
-            ax.plot(x, roll, color=c)
-            ax.fill_between(x, roll - std, roll + std, color=c, alpha=0.2)
+            roll = series.rolling(5, center=True, min_periods=1).mean()
+            x, y, _ = _thin_line(x_all, roll.to_numpy(dtype=float), how="stride")
+            ax.plot(x, y, color=c)
             ax.set_ylabel(col)
-    axes[-1].set_xlabel("episode")
+    axes[-1].set_xlabel("Completed episodes")
     fig.tight_layout()
     fig.savefig(out, dpi=300)
     plt.close(fig)
@@ -282,6 +549,7 @@ def plot_episode_length(run_dir: Path, out: Optional[Path] = None) -> Path:
             y = work["steps"].rolling(5, center=True, min_periods=1).mean().to_numpy()
             band = work["steps"].rolling(5, center=True, min_periods=1).std().fillna(0).to_numpy()
             x = work["episode"].to_numpy() if "episode" in work.columns else np.arange(len(work))
+        x, y, band = _thin_line(x, y, band)
         ax.plot(x, y, color="gray")
         ax.fill_between(x, np.maximum(y - band, 0.0), y + band, color="gray", alpha=0.2)
     ax.set_xlabel("episode")
@@ -300,7 +568,8 @@ def success_rate_figure(success: np.ndarray, window: int) -> plt.Figure:
     if success.size:
         w = min(max(1, int(window)), int(success.size))
         rate = pd.Series(success).rolling(w, min_periods=max(1, w // 4)).mean()
-        ax.plot(np.arange(success.size), rate.to_numpy(), color="#2F67B1", lw=2.0)
+        x, y, _ = _thin_line(np.arange(success.size), rate.to_numpy(), how="stride")
+        ax.plot(x, y, color="#2F67B1", lw=2.0)
         ax.set_ylim(-0.02, 1.02)
         ax.axhline(0.0, color="0.7", lw=0.6)
         ax.axhline(1.0, color="0.7", lw=0.6)
@@ -312,16 +581,13 @@ def success_rate_figure(success: np.ndarray, window: int) -> plt.Figure:
 
 
 def plot_success_rate(run_dir: Path, out: Optional[Path] = None, window: Optional[int] = None) -> Path:
-    """Moving-window success rate over completed env-episodes."""
+    """Rolling success rate over every finished env-episode, in the same order as reward."""
     run_dir = Path(run_dir)
     out = out or (run_dir / "figures" / "success_rate.png")
     out.parent.mkdir(parents=True, exist_ok=True)
     eps = _load_episodes(run_dir)
     if eps is not None and "reason" in eps.columns and len(eps):
-        work = eps.copy()
-        sort_cols = [c for c in ("episode", "env") if c in work.columns]
-        if sort_cols:
-            work = work.sort_values(sort_cols)
+        work = _env_episode_order(eps)
         n_env = int(work["env"].nunique()) if "env" in work.columns else 1
         w = window if window is not None else max(32, 8 * n_env)
         success = (work["reason"].astype(str) == "success").to_numpy(dtype=float)
@@ -341,41 +607,30 @@ def plot_progress_vs_episode_length(run_dir: Path, out: Optional[Path] = None) -
     run_dir = Path(run_dir)
     out = out or (run_dir / "figures" / "progress_vs_episode_length.png")
     out.parent.mkdir(parents=True, exist_ok=True)
-    steps = _load_steps(run_dir)
+    summary = _step_summary(run_dir)
     cfg = _load_config(run_dir).get("sim", {})
     amp = float(cfg.get("inflow_velocity", 400.0))
     period = float(cfg.get("inflow_period", 1.0))
     fig, ax = plt.subplots(figsize=(8, 6))
-    if steps is not None and "episode" in steps.columns:
-        xs = [c for c in steps.columns if c.startswith("location_") and c.endswith("_x")]
-        if xs:
-            work = steps.copy()
-            work["_com_x"] = work[xs].mean(axis=1)
-            keys = ["episode", "env"] if "env" in work.columns else ["episode"]
-            g = work.groupby(keys, sort=True)
-            first = g["_com_x"].first()
-            last = g["_com_x"].last()
-            dx = last - first
-            length = g.size().rename("length")
-            if "episode_time" in work.columns:
-                t_last = g["episode_time"].last()
-            else:
-                t_last = pd.Series(0.0, index=dx.index)
-            inflow = np.asarray(
-                beat_waveform(torch.tensor(t_last.to_numpy(), dtype=torch.float64), amp, period)
-            )
-            sc = ax.scatter(
-                length.to_numpy(),
-                dx.to_numpy(),
-                c=inflow,
-                cmap="coolwarm",
-                s=28,
-                alpha=0.85,
-                edgecolors="none",
-                zorder=3,
-            )
-            cb = fig.colorbar(sc, ax=ax)
-            cb.set_label("Last inflow (mm/s)")
+    if summary is not None and len(summary.episodes):
+        ep = summary.episodes
+        if len(ep) > _MAX_SCATTER:
+            ep = ep.sample(n=_MAX_SCATTER, random_state=0)
+        inflow = np.asarray(
+            beat_waveform(torch.tensor(ep["t_last"].to_numpy(), dtype=torch.float64), amp, period)
+        )
+        sc = ax.scatter(
+            ep["length"].to_numpy(),
+            ep["dx"].to_numpy(),
+            c=inflow,
+            cmap="coolwarm",
+            s=28,
+            alpha=0.85,
+            edgecolors="none",
+            zorder=3,
+        )
+        cb = fig.colorbar(sc, ax=ax)
+        cb.set_label("Last inflow (mm/s)")
     ax.set_xlabel("Episode length (steps)")
     ax.set_ylabel(r"$\Delta x_\mathrm{COM}$ (mm)")
     ax.grid(True, alpha=0.3)
@@ -392,40 +647,40 @@ def plot_center_of_mass(run_dir: Path, out: Optional[Path] = None) -> Path:
     run_dir = Path(run_dir)
     out = out or (run_dir / "figures" / "center_of_mass.png")
     out.parent.mkdir(parents=True, exist_ok=True)
-    steps = _load_steps(run_dir)
+    summary = _step_summary(run_dir)
     cfg = _load_config(run_dir).get("sim", {})
     amp = float(cfg.get("inflow_velocity", 400.0))
     period = float(cfg.get("inflow_period", 1.0))
     fig, axes = plt.subplots(1, 2, figsize=(15, 5), sharey=True)
     inflow_color = "#C0392B"
     color = "#2F67B1"
-    if steps is not None:
-        xs = [c for c in steps.columns if c.startswith("location_") and c.endswith("_x")]
-        if xs and "episode_time" in steps.columns:
-            com_x = steps[xs].mean(axis=1)
-            n = len(steps)
-            early, late = slice(0, max(1, n // 10)), slice(max(0, n - n // 10), n)
-            for i, (ax, sl) in enumerate(zip(axes, [early, late])):
-                t = steps["episode_time"].iloc[sl].to_numpy()
-                y = com_x.iloc[sl].to_numpy()
-                binned = _binned_mean_ci(t, y)
-                if binned is not None:
-                    xc, mu, half = binned
-                    ax.fill_between(xc, mu - half, mu + half, color=color, alpha=0.25, zorder=3)
-                    ax.plot(xc, mu, color=color, lw=2.0, zorder=4)
-                ax.set_xlabel("Time (s)")
-                ax.set_ylabel("COM x (mm)")
-                tmin, tmax = (float(np.min(t)), float(np.max(t))) if t.size else (0.0, 1.0)
-                t_grid = np.linspace(tmin, tmax, 400)
-                inflow = np.asarray(
-                    beat_waveform(torch.tensor(t_grid, dtype=torch.float64), amp, period)
-                )
-                ax2 = ax.twinx()
-                ax2.plot(t_grid, inflow, color=inflow_color, ls="--", lw=1.6, zorder=1)
-                ax2.tick_params(axis="y", colors=inflow_color)
-                ax2.set_ylim(min(0.0, float(np.min(inflow))), amp * 1.05)
-                if i == 1:
-                    ax2.set_ylabel("Inflow (mm/s)", color=inflow_color)
+    if summary is not None and len(summary.sample):
+        sample = summary.sample
+        n = max(summary.n_rows, 1)
+        windows = (sample[sample["row"] < n * 0.1], sample[sample["row"] >= n * 0.9])
+        for i, (ax, sl) in enumerate(zip(axes, windows)):
+            if sl.empty:
+                continue
+            t = sl["episode_time"].to_numpy()
+            y = sl["com_x"].to_numpy()
+            binned = _binned_mean_ci(t, y)
+            if binned is not None:
+                xc, mu, half = binned
+                ax.fill_between(xc, mu - half, mu + half, color=color, alpha=0.25, zorder=3)
+                ax.plot(xc, mu, color=color, lw=2.0, zorder=4)
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("COM x (mm)")
+            tmin, tmax = (float(np.min(t)), float(np.max(t))) if t.size else (0.0, 1.0)
+            t_grid = np.linspace(tmin, tmax, 400)
+            inflow = np.asarray(
+                beat_waveform(torch.tensor(t_grid, dtype=torch.float64), amp, period)
+            )
+            ax2 = ax.twinx()
+            ax2.plot(t_grid, inflow, color=inflow_color, ls="--", lw=1.6, zorder=1)
+            ax2.tick_params(axis="y", colors=inflow_color)
+            ax2.set_ylim(min(0.0, float(np.min(inflow))), amp * 1.05)
+            if i == 1:
+                ax2.set_ylabel("Inflow (mm/s)", color=inflow_color)
     fig.tight_layout()
     fig.savefig(out, dpi=300)
     plt.close(fig)
@@ -439,30 +694,29 @@ def plot_dispersion(run_dir: Path, out: Optional[Path] = None) -> Path:
     run_dir = Path(run_dir)
     out = out or (run_dir / "figures" / "dispersion.png")
     out.parent.mkdir(parents=True, exist_ok=True)
-    steps = _load_steps(run_dir)
+    summary = _step_summary(run_dir)
     cfg = _load_config(run_dir).get("sim", {})
     amp = float(cfg.get("inflow_velocity", 400.0))
     period = float(cfg.get("inflow_period", 1.0))
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex="col")
     inflow_color = "#C0392B"
-    if steps is not None and "episode_time" in steps.columns:
-        xs = [c for c in steps.columns if c.startswith("location_") and c.endswith("_x")]
-        ys = [c for c in steps.columns if c.startswith("location_") and c.endswith("_y")]
-        sx = steps[xs].std(axis=1) if xs else None
-        sy = steps[ys].std(axis=1) if ys else None
-        n = len(steps)
-        early, late = slice(0, max(1, n // 10)), slice(max(0, n - n // 10), n)
+    if summary is not None and len(summary.sample):
+        sample = summary.sample
+        n = max(summary.n_rows, 1)
+        early = sample["row"] < n * 0.1
+        late = sample["row"] >= n * 0.9
         specs = [
-            (0, 0, early, r"$\sigma_x$ (mm)", "#2F67B1", sx),
-            (0, 1, late, r"$\sigma_x$ (mm)", "#2F67B1", sx),
-            (1, 0, early, r"$\sigma_y$ (mm)", "#2E8B57", sy),
-            (1, 1, late, r"$\sigma_y$ (mm)", "#2E8B57", sy),
+            (0, 0, early, r"$\sigma_x$ (mm)", "#2F67B1", "sig_x"),
+            (0, 1, late, r"$\sigma_x$ (mm)", "#2F67B1", "sig_x"),
+            (1, 0, early, r"$\sigma_y$ (mm)", "#2E8B57", "sig_y"),
+            (1, 1, late, r"$\sigma_y$ (mm)", "#2E8B57", "sig_y"),
         ]
         for row, col, sl, ylabel, color, series in specs:
             ax = axes[row, col]
-            t = steps["episode_time"].iloc[sl].to_numpy()
-            if series is not None:
-                y = series.iloc[sl].to_numpy()
+            part = sample.loc[sl]
+            t = part["episode_time"].to_numpy()
+            if series in part.columns and len(part):
+                y = part[series].to_numpy()
                 binned = _binned_mean_ci(t, y)
                 if binned is not None:
                     xc, mu, half = binned
@@ -507,6 +761,8 @@ def plot_velocity_temporal_profile(run_dir: Path, out: Optional[Path] = None) ->
         else []
     )
     t = vx = vy = None
+    if len(fields) > _MAX_LINE_POINTS:
+        fields = fields[:: max(1, int(np.ceil(len(fields) / _MAX_LINE_POINTS)))]
     if fields:
         ts, mean_vx, mean_vy = [], [], []
         for f in fields:
@@ -516,17 +772,12 @@ def plot_velocity_temporal_profile(run_dir: Path, out: Optional[Path] = None) ->
             mean_vy.append(float(np.mean(d["vy"])))
         t, vx, vy = np.asarray(ts), np.asarray(mean_vx), np.asarray(mean_vy)
     else:
-        steps = _load_steps(run_dir)
-        if steps is not None:
-            vxs = [c for c in steps.columns if c.startswith("velocity_") and c.endswith("_x")]
-            vys = [c for c in steps.columns if c.startswith("velocity_") and c.endswith("_y")]
-            t = (
-                steps["episode_time"].to_numpy()
-                if "episode_time" in steps.columns
-                else np.arange(len(steps), dtype=float)
-            )
-            vx = steps[vxs].mean(axis=1).to_numpy() if vxs else None
-            vy = steps[vys].mean(axis=1).to_numpy() if vys else None
+        summary = _step_summary(run_dir)
+        if summary is not None and len(summary.sample):
+            s = summary.sample
+            t = s["episode_time"].to_numpy()
+            vx = s["vx"].to_numpy()
+            vy = s["vy"].to_numpy()
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
     panels = [
@@ -616,11 +867,15 @@ def plot_pcgrad_comparison(with_dir: Path, without_dir: Path, out_dir: Optional[
             (with_dir, "#2F67B1", "with PCGrad"),
             (without_dir, "#BF2C23", "without PCGrad"),
         ]:
-            steps = _load_steps(run)
-            if steps is None or m not in steps.columns:
+            summary = _step_summary(run)
+            if summary is None or not len(summary.episodes):
                 continue
-            g = steps.groupby("episode")[m].mean().rolling(5, center=True, min_periods=1).mean()
-            ax.plot(g.index, g.values, color=color, label=label)
+            ep = summary.episodes
+            col = {"progress": "progress_sum", "energy_efficiency": "energy_sum", "smoothness": "smooth_sum"}[m]
+            agg = ep.groupby("episode", sort=True)[[col, "length"]].sum()
+            g = (agg[col] / agg["length"].clip(lower=1)).rolling(5, center=True, min_periods=1).mean()
+            x, y, _ = _thin_line(g.index.to_numpy(), g.to_numpy(), how="stride")
+            ax.plot(x, y, color=color, label=label)
         ax.set_ylabel(m)
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -657,7 +912,7 @@ def generate_all_for_run(run_dir: Path, *, video: bool = False) -> list[Path]:
         try:
             from fluxswarm.analysis.swarm_viz import animate_swarm_from_run
 
-            anim = animate_swarm_from_run(run_dir, steps=_load_steps(run_dir))
+            anim = animate_swarm_from_run(run_dir)
             if anim is not None:
                 paths.append(anim)
         except Exception:

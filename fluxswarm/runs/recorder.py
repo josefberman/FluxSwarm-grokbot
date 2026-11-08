@@ -30,6 +30,21 @@ def make_run_id(tag: str = "") -> str:
     return f"{base}_{tag}" if tag else base
 
 
+def _part_count(directory: Path) -> int:
+    if not directory.is_dir():
+        return 0
+    return sum(1 for p in directory.glob("part-*.parquet"))
+
+
+def _append_parquet(rows: list[dict[str, Any]], directory: Path, part: int) -> int:
+    """Write rows to a new part file. ``pd.read_parquet(directory)`` still concatenates them."""
+    if not rows:
+        return part
+    directory.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(directory / f"part-{part:06d}.parquet", index=False)
+    return part + 1
+
+
 class RunRecorder:
     def __init__(self, cfg: Config, algorithm: str = "momappo", run_id: Optional[str] = None):
         self.cfg = cfg
@@ -44,7 +59,12 @@ class RunRecorder:
         (self.run_dir / "figures").mkdir(exist_ok=True)
         self._steps: list[dict[str, Any]] = []
         self._episodes: list[dict[str, Any]] = []
-        self._step_flush_every = 256
+        # One new part file per flush. Never reread the log: a full rewrite is
+        # O(rows²) and dominates the update once the run is long.
+        self._step_flush_every = 8192
+        self._episode_flush_every = 1024
+        self._step_part = _part_count(self.run_dir / "steps.parquet")
+        self._episode_part = _part_count(self.run_dir / "episodes.parquet")
 
     def save_config(self, cfg: Config) -> None:
         cfg.save(self.run_dir / "config.yaml")
@@ -98,6 +118,8 @@ class RunRecorder:
                         **ep,
                     }
                 )
+                if len(self._episodes) >= self._episode_flush_every:
+                    self._flush_episodes()
 
         if save_fields:
             # Fluid snapshots stay env-0 only; step/episode rows log every env.
@@ -118,24 +140,20 @@ class RunRecorder:
             self._flush_steps()
 
     def _flush_steps(self) -> None:
-        if not self._steps:
-            return
-        df = pd.DataFrame(self._steps)
-        path = self.run_dir / "steps.parquet"
-        if path.exists():
-            prev = pd.read_parquet(path)
-            df = pd.concat([prev, df], ignore_index=True)
-        df.to_parquet(path, index=False)
+        self._step_part = _append_parquet(
+            self._steps, self.run_dir / "steps.parquet", self._step_part
+        )
         self._steps.clear()
+
+    def _flush_episodes(self) -> None:
+        self._episode_part = _append_parquet(
+            self._episodes, self.run_dir / "episodes.parquet", self._episode_part
+        )
+        self._episodes.clear()
 
     def close(self) -> None:
         self._flush_steps()
-        if self._episodes:
-            ep_path = self.run_dir / "episodes.parquet"
-            df = pd.DataFrame(self._episodes)
-            if ep_path.exists():
-                prev = pd.read_parquet(ep_path)
-                df = pd.concat([prev, df], ignore_index=True)
-            df.to_parquet(ep_path, index=False)
-            self._episodes.clear()
-            df.to_csv(self.run_dir / "episodes.csv", index=False)
+        self._flush_episodes()
+        ep_path = self.run_dir / "episodes.parquet"
+        if _part_count(ep_path):
+            pd.read_parquet(ep_path).to_csv(self.run_dir / "episodes.csv", index=False)

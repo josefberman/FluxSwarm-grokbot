@@ -180,6 +180,9 @@ class DummyUpstreamEnv:
             progress = torch.where(moving_left, dx / L * 300.0, dx / L * 100.0)
         else:
             progress = torch.where(moving_left, torch.ones_like(dx), torch.full_like(dx, -0.1))
+        step_cost = float(self.cfg.task.step_cost)
+        if step_cost != 0.0:
+            progress = progress - step_cost
         mag = torch.linalg.norm(actions, dim=-1).clamp(0.0, 1.0)
         energy = 1.0 - mag
         delta = actions - s.prev_action
